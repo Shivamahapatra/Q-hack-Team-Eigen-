@@ -1,30 +1,20 @@
-# Project Context: C-DAC Quantum Hackathon
+# Project Context: C-DAC Quantum Hackathon 2026
 
-## Overview
-This repository hosts the project for the **C-DAC Quantum Hackathon**.
+## Team Overview
+- **Team**: Team Eigen
+- **Institution**: PES University (PESU)
+- **Event**: C-DAC Quantum Hackathon 2026
+- **Target Platform**: Qniverse
 
-## Hackathon Target
-- **Selected Domain**: Domain 08: Open Innovation in Quantum Computing
-- **Project Type**: Full-Stack Quantum Web Tool (Next.js UI + Python Cloud Routing Backend)
+## Repository Status
+- Clean project skeleton initialized.
+- Per hackathon regulations, no solution code or domain pre-selection. All solution implementation begins on the event day once problem statements are released.
 
-## Architecture & Boundaries
-- Application root: `c:\Users\PC\Documents\Q hackthon\`
-  - `frontend/`: Next.js interactive web interface (React, TypeScript, Tailwind CSS)
-  - `backend/`: Python REST API (`app.py`, `execution_router.py`)
-- `LLMWiki/`: Second brain / knowledge base and research documentation.
-  - `LLMWiki/raw/`: Generated artifacts, implementation plans, notes, and research using Obsidian bidirectional linking (`[[Node Name]]`).
-
-## Framework & Environment
-- **Quantum SDK**: Qiskit (`qiskit`, `qiskit-ibm-runtime`)
-- **Backend API**: Python (Flask, Flask-CORS, python-dotenv)
-- **Frontend**: Next.js 14 (App Router, TypeScript, Tailwind CSS)
-- **Execution Backend**: IBM Quantum Cloud (Cloud Routing enforced)
-- **Local Simulation**: Disabled (hardware protection for i7-8565U / MX130)
-
-## Status & Progress
-- Project initialized in assigned directory `c:\Users\PC\Documents\Q hackthon`.
-- Execution router (`backend/execution_router.py`) and API server (`backend/app.py`) implemented.
-- Local simulation guardrails and API endpoints verified via automated test suite (`backend/test_app.py` - 5/5 passed).
-- Next.js frontend scaffold in progress.
-- Foundational API bridge established between Next.js and Python cloud routing logic.
-
+## Project Structure
+- `src/`: Source code modules (empty skeleton with `.gitkeep`).
+- `notebooks/`: Experimentation notebooks (empty skeleton with `.gitkeep`).
+- `results/`: Output data and benchmarks (empty skeleton with `.gitkeep`).
+- `docs/`: Template documentation (`01_team_info.md` to `05_ai_usage_declaration.md`).
+- `CONTRIBUTING.md`: Branching, commit hygiene, and pull request workflow.
+- `requirements.txt`: Baseline dependencies (`numpy`, `matplotlib`, `python-dotenv`).
+- `.env.example`: Configuration template with `QNIVERSE_TOKEN`.
