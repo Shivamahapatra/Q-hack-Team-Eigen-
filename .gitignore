@@ -1,0 +1,25 @@
+# Obsidian internal config and UI files
+.obsidian/
+*/.obsidian/
+
+# Agent & IDE internal state
+.serena/
+
+# Python virtual environment & cache
+.venv/
+__pycache__/
+*.py[cod]
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+.turbo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Secrets & Local Environment
+.env
+.env*.local
