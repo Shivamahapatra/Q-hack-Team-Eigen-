@@ -23,6 +23,8 @@ from c1_01_final import Op, unitary, equal_up_to_phase, profile
 import qniverse_adapter as qa
 from optimizer import (
     optimize,
+    draw_text,
+    CircuitDiagram,
     verify_equivalence,
     OptimizationResult,
     PASS_IDENTITY_REMOVAL,
@@ -1017,6 +1019,86 @@ class TestQC0303Optimizer(unittest.TestCase):
             _reconstruct_circuit([Op("x", (2,))], num_qubits=2, num_clbits=0, q_layout=[("q", 2)])
         err_msg = str(ctx.exception).lower()
         self.assertTrue("out of range" in err_msg or "invalid qubit index" in err_msg)
+
+    # ---------------------------------- DRAW_TEXT & CIRCUIT DIAGRAM TESTS
+    def test_draw_text_column_count_matches_circuit_depth(self):
+        """Verifies that the number of columns in draw_text matches the circuit depth."""
+        test_cases = [
+            # 1. Single qubit sequential gates
+            ([Op("h", (0,)), Op("x", (0,)), Op("z", (0,))], 1),
+            # 2. Multi-qubit disjoint parallel gates
+            ([Op("h", (0,)), Op("x", (1,)), Op("y", (2,))], 3),
+            # 3. Entangling Bell pair + single-qubit gate
+            ([Op("h", (0,)), Op("cx", (0, 1)), Op("t", (1,))], 2),
+            # 4. Mixed gates with terminal measurements
+            ([Op("h", (0,)), Op("cx", (0, 1)), Op("measure", (0,), (0,)), Op("measure", (1,), (1,))], 2),
+            # 5. Staggered gates on 3 qubits
+            ([Op("h", (0,)), Op("x", (1,)), Op("cx", (0, 1)), Op("cx", (1, 2)), Op("z", (2,))], 3),
+            # 6. Empty circuit
+            ([], 2),
+        ]
+
+        for ops, nq in test_cases:
+            p = profile(ops, nq)
+            diagram = draw_text(ops, nq, print_output=False)
+
+            # 1. Assert metadata num_columns matches profiler depth
+            self.assertEqual(
+                diagram.num_columns,
+                p["depth"],
+                f"Failed for ops={ops}: expected depth {p['depth']}, got {diagram.num_columns}"
+            )
+
+            # 2. Assert diagram has one line per qubit
+            lines = [line for line in diagram.strip().splitlines() if line]
+            self.assertEqual(len(lines), nq)
+
+            # 3. If there are columns, assert every wire has the exact same total character length
+            if diagram.num_columns > 0:
+                first_len = len(lines[0])
+                for line in lines:
+                    self.assertEqual(len(line), first_len, "All qubit lines must have identical column length")
+
+    def test_draw_text_barrier_vertical_marker(self):
+        """draw_text places vertical marker '|' on barrier qubits."""
+        ops = [Op("h", (0,)), Op("barrier", (0, 1)), Op("h", (0,))]
+        diagram = draw_text(ops, 2, print_output=False)
+        self.assertIn("|", diagram)
+        lines = diagram.strip().splitlines()
+        self.assertIn("|", lines[0])  # q0 has barrier
+        self.assertIn("|", lines[1])  # q1 has barrier
+
+    def test_draw_text_qniverse_circuit_input(self):
+        """draw_text accepts a circuit object directly."""
+        ops = [Op("h", (0,)), Op("cx", (0, 1)), Op("measure", (1,), (0,))]
+        res = optimize(ops)
+        diagram = draw_text(res.circuit, print_output=False)
+        p = profile(ops, 2)
+        self.assertEqual(diagram.num_columns, p["depth"])
+        self.assertEqual(diagram.num_columns, 3)
+        self.assertIn("@", diagram)
+        self.assertIn("(+)", diagram)
+        self.assertIn("M", diagram)
+
+    def test_draw_text_formatting_structure(self):
+        """draw_text produces expected wire labels and gate symbols."""
+        ops = [
+            Op("h", (0,)),
+            Op("cx", (0, 1)),
+            Op("t", (1,)),
+            Op("measure", (0,), (0,)),
+        ]
+        diagram = draw_text(ops, 2, print_output=False)
+        lines = diagram.strip().splitlines()
+        self.assertTrue(lines[0].startswith("q0: --"))
+        self.assertTrue(lines[1].startswith("q1: --"))
+        # q0 should contain H, @, M
+        self.assertIn("H", lines[0])
+        self.assertIn("@", lines[0])
+        self.assertIn("M", lines[0])
+        # q1 should contain (+), T
+        self.assertIn("(+)", lines[1])
+        self.assertIn("T", lines[1])
 
 
 if __name__ == "__main__":

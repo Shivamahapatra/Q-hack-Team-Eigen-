@@ -1056,3 +1056,175 @@ def optimize(
     }
 
     return OptimizationResult(circuit=new_circuit, report=report)
+
+
+class CircuitDiagram(str):
+    """String subclass representing an ASCII circuit diagram with column metadata."""
+
+    def __new__(cls, content: str, num_columns: int = 0):
+        obj = str.__new__(cls, content)
+        obj.num_columns = num_columns
+        return obj
+
+
+def _gate_symbols(op: Op) -> Dict[int, str]:
+    """Maps an Op to its ASCII display symbol on each qubit it acts on."""
+    name = op.name.lower()
+    qs = op.qubits
+    if name == "barrier":
+        return {q: "|" for q in qs}
+    if name == "measure":
+        return {q: "M" for q in qs}
+    if name == "reset":
+        return {q: "R" for q in qs}
+    if name == "id":
+        return {qs[0]: "Id"}
+    if name == "cx":
+        return {qs[0]: "@", qs[1]: "(+)"}
+    if name == "cy":
+        return {qs[0]: "@", qs[1]: "(Y)"}
+    if name == "cz":
+        return {qs[0]: "@", qs[1]: "@"}
+    if name == "ch":
+        return {qs[0]: "@", qs[1]: "(H)"}
+    if name == "swap":
+        return {qs[0]: "x", qs[1]: "x"}
+    if name == "ccx":
+        return {qs[0]: "@", qs[1]: "@", qs[2]: "(+)"}
+    if name == "cswap":
+        return {qs[0]: "@", qs[1]: "x", qs[2]: "x"}
+    if name == "s":
+        return {qs[0]: "S"}
+    if name == "sdg":
+        return {qs[0]: "Sdg"}
+    if name == "t":
+        return {qs[0]: "T"}
+    if name == "tdg":
+        return {qs[0]: "Tdg"}
+    if name in ("h", "x", "y", "z"):
+        return {qs[0]: name.upper()}
+    if name in ("rx", "ry", "rz", "p", "u1", "u2", "u3"):
+        return {qs[0]: name.capitalize()}
+    if len(qs) == 1:
+        return {qs[0]: name.upper()}
+    return {q: name.upper() for q in qs}
+
+
+def draw_text(
+    ops: Any,
+    num_qubits: Optional[int] = None,
+    print_output: bool = True
+) -> CircuitDiagram:
+    """
+    Renders and prints a clean ASCII circuit diagram, one line per qubit,
+    with gates ordered and aligned in chronological execution layers (depth columns),
+    a vertical marker '|' for barriers, and zero dependency on the Qniverse draw method.
+
+    Example output:
+      q0: --H--X--@--M--
+      q2: --Y--(+)--T--M--
+
+    Args:
+        ops: A list of Op instances, or a QniverseCircuit object.
+        num_qubits: Declared qubit count. If omitted, inferred from ops or circuit.
+        print_output: Whether to print the diagram to stdout (default True).
+
+    Returns:
+        CircuitDiagram (str subclass with a .num_columns attribute).
+    """
+    # Ingest operations from QniverseCircuit if passed
+    if hasattr(ops, "operations"):
+        import qniverse_adapter as _qa
+        parsed_ops, q_count, _, _ = _qa.from_qniverse(ops)
+        if num_qubits is None:
+            num_qubits = q_count
+        ops = parsed_ops
+    elif hasattr(ops, "__iter__"):
+        ops = list(ops)
+    else:
+        raise TypeError(f"Expected list of Op or QniverseCircuit, got {type(ops)}")
+
+    if num_qubits is None:
+        if ops:
+            num_qubits = max((q for o in ops for q in o.qubits), default=-1) + 1
+        else:
+            num_qubits = 0
+
+    if num_qubits == 0:
+        empty_diag = CircuitDiagram("(empty circuit)", num_columns=0)
+        if print_output:
+            print(empty_diag)
+        return empty_diag
+
+    # Schedule operations into column layers using DAG / depth rules
+    free = [0] * num_qubits
+    layers: List[Dict[int, str]] = []
+
+    for o in ops:
+        sym_map = _gate_symbols(o)
+        start = max((free[q] for q in o.qubits), default=0)
+
+        # Ensure layers list has enough capacity up to column start
+        while len(layers) <= start:
+            layers.append({})
+
+        # If any qubit in o.qubits is already occupied at layers[start], advance
+        while any(q in layers[start] for q in o.qubits):
+            start += 1
+            while len(layers) <= start:
+                layers.append({})
+
+        # Place symbols into layers[start]
+        for q, sym in sym_map.items():
+            if q < num_qubits:
+                layers[start][q] = sym
+
+        # Update next free layer for the qubits
+        for q in o.qubits:
+            if q < num_qubits:
+                free[q] = start + 1
+
+    num_columns = len(layers)
+    label_width = len(str(num_qubits - 1))
+
+    if num_columns == 0:
+        lines = [f"q{q:<{label_width}}: --" for q in range(num_qubits)]
+        diag = CircuitDiagram("\n".join(lines), num_columns=0)
+        if print_output:
+            print(diag)
+        return diag
+
+    # Calculate column widths across all qubits
+    col_widths = []
+    for c in range(num_columns):
+        w = max((len(layers[c].get(q, "")) for q in range(num_qubits)), default=1)
+        col_widths.append(max(w, 1))
+
+    # Build ASCII wire strings
+    lines = []
+    for q in range(num_qubits):
+        prefix = f"q{q:<{label_width}}: --"
+        wire_segments = []
+        for c in range(num_columns):
+            w = col_widths[c]
+            sym = layers[c].get(q)
+            if sym is None:
+                # Idle wire
+                cell = "-" * w
+            else:
+                # Pad symbol with dashes to match column width
+                pad_total = w - len(sym)
+                pad_left = pad_total // 2
+                pad_right = pad_total - pad_left
+                cell = ("-" * pad_left) + sym + ("-" * pad_right)
+            wire_segments.append(cell + "--")
+        lines.append(prefix + "".join(wire_segments))
+
+    diagram_text = "\n".join(lines)
+    result = CircuitDiagram(diagram_text, num_columns=num_columns)
+
+    if print_output:
+        print(result)
+
+    return result
+

@@ -18,6 +18,8 @@ for _p in _candidates:
 
 from .optimizer import (
     optimize,
+    draw_text,
+    CircuitDiagram,
     OptimizationResult,
     verify_equivalence,
     SUPPORTED_PASSES,
@@ -42,6 +44,8 @@ from .optimizer import (
 
 __all__ = [
     "optimize",
+    "draw_text",
+    "CircuitDiagram",
     "OptimizationResult",
     "verify_equivalence",
     "SUPPORTED_PASSES",

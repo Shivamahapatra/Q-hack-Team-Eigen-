@@ -22,7 +22,7 @@ for _p in _candidates:
         sys.path.insert(0, _p)
 
 from c1_01_final import Op
-from optimizer import optimize
+from optimizer import optimize, draw_text
 
 
 def run_demonstrations():
@@ -57,9 +57,15 @@ def run_demonstrations():
 
     res_a = optimize(circuit_a)
 
+    print("\nBefore Optimization Circuit Diagram:")
+    draw_text(circuit_a, 2)
+
     print("\nBefore Optimization:")
     for k, v in res_a.report["before"].items():
         print(f"  {k:22s}: {v}")
+
+    print("\nAfter Optimization Circuit Diagram:")
+    draw_text(res_a.circuit, 2)
 
     print("\nAfter Optimization:")
     for k, v in res_a.report["after"].items():
@@ -94,9 +100,15 @@ def run_demonstrations():
 
     res_b = optimize(circuit_b)
 
+    print("\nBefore Optimization Circuit Diagram:")
+    draw_text(circuit_b, 2)
+
     print("\nBefore Optimization:")
     for k, v in res_b.report["before"].items():
         print(f"  {k:22s}: {v}")
+
+    print("\nAfter Optimization Circuit Diagram:")
+    draw_text(res_b.circuit, 2)
 
     print("\nAfter Optimization:")
     for k, v in res_b.report["after"].items():

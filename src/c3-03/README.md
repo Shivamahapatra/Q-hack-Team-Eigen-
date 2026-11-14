@@ -76,7 +76,7 @@ All passes use **per-wire frontier adjacency** (gates on independent wires do no
 ## 4. Public API & Usage
 
 ```python
-from optimizer import optimize, OptimizationResult
+from optimizer import optimize, OptimizationResult, draw_text
 
 # Optimize with all passes enabled by default:
 result: OptimizationResult = optimize(qc)
@@ -85,12 +85,27 @@ result: OptimizationResult = optimize(qc)
 new_circuit = result.circuit
 report = result.report
 
+# Render ASCII circuit diagram (one line per qubit, columns aligned to depth):
+draw_text(new_circuit)
+
 # Or selectively enable passes:
 result = optimize(
     qc,
     enabled_passes=["identity_removal", "self_inverse_cancellation"]
 )
 ```
+
+### ASCII Circuit Diagram Rendering:
+`draw_text(ops, num_qubits=None)` prints a clean ASCII diagram with zero dependency on GUI or Qniverse `draw` methods:
+```text
+q0: --H--X---@---M--
+q1: --------(+)--M--
+```
+Features:
+- **Depth-Aligned Columns**: Each column represents a chronological execution layer matching `profile(ops)["depth"]`.
+- **Multi-Qubit Operators**: Control wires render `@`, target wires render `(+)` for CX/CCX, `(Y)` for CY, `(H)` for CH, and `x` for SWAP.
+- **Barriers**: Non-unitary compilation barriers display vertical markers `|` on spanned qubits.
+- **Multi-Backend**: Accepts either a raw list of `Op` instances or a `QniverseCircuit` directly.
 
 ### Report Output Structure:
 ```json
