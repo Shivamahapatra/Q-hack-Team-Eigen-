@@ -34,9 +34,18 @@ class Op:
     qubits: tuple
     cbits: tuple = ()
 
+    def __post_init__(self):
+        if isinstance(self.name, str):
+            object.__setattr__(self, "name", self.name.lower())
+
 
 # ---------------------------------------------------------------- metrics
 def profile(ops, num_qubits_declared):
+    for o in ops:
+        for q in o.qubits:
+            if not isinstance(q, int) or q < 0 or q >= num_qubits_declared:
+                raise ValueError(f"Qubit index {q} out of bounds for declared qubit count {num_qubits_declared}")
+
     gates = [o for o in ops if o.name not in NON_UNITARY]
     counts = Counter(o.name for o in gates)
     used = {q for o in ops for q in o.qubits}
@@ -44,6 +53,8 @@ def profile(ops, num_qubits_declared):
     free = [0] * num_qubits_declared          # next free layer per qubit
     depth = 0
     for o in ops:
+        if not o.qubits:
+            continue
         start = max(free[q] for q in o.qubits)
         if o.name == "barrier":
             for q in o.qubits:
@@ -75,6 +86,8 @@ RULES = {
     "z": [("h", (0,)), ("x", (0,)), ("h", (0,))],
     "cz": [("h", (1,)), ("cx", (0, 1)), ("h", (1,))],
     "cy": [("sdg", (1,)), ("cx", (0, 1)), ("s", (1,))],
+    "ch": [("s", (1,)), ("h", (1,)), ("t", (1,)), ("cx", (0, 1)),
+           ("tdg", (1,)), ("h", (1,)), ("sdg", (1,))],
     "swap": [("cx", (0, 1)), ("cx", (1, 0)), ("cx", (0, 1))],
     "s": [("t", (0,)), ("t", (0,))],
     "sdg": [("tdg", (0,)), ("tdg", (0,))],
@@ -83,6 +96,7 @@ RULES = {
             ("t", (2,)), ("cx", (1, 2)), ("tdg", (2,)), ("cx", (0, 2)),
             ("t", (1,)), ("t", (2,)), ("h", (2,)), ("cx", (0, 1)),
             ("t", (0,)), ("tdg", (1,)), ("cx", (0, 1))],
+    "cswap": [("cx", (2, 1)), ("ccx", (0, 1, 2)), ("cx", (2, 1))],
 }
 # Alternative rules tried if the first expansion hits a non-basis gate.
 ALT_RULES = {
@@ -221,16 +235,19 @@ def equal_up_to_phase(a, b, tol=1e-9):
 
 
 # ----------------------------------------------------------- Qniverse hooks
-def parse_qasm(qasm_str):
+def parse_qasm_full(qasm_str):
     """
-    Parses OpenQASM 2.0 text representation into (ops, num_qubits).
-    Maps Qniverse gate identifiers to lowercase profiler Op names.
+    Parses OpenQASM 2.0 text representation into:
+      (ops, total_qubits, total_cbits, q_layout, c_layout)
+    Validates register bounds and maps Qniverse gate identifiers to lowercase profiler Op names.
     """
     if not isinstance(qasm_str, str) or not qasm_str.strip():
         raise ValueError("Invalid OpenQASM: empty or non-string input provided")
 
     qreg_map = {}   # reg_name -> (start_idx, size)
     creg_map = {}   # reg_name -> (start_idx, size)
+    q_layout = []   # [(reg_name, size), ...]
+    c_layout = []   # [(reg_name, size), ...]
     total_qubits = 0
     total_cbits = 0
     ops = []
@@ -250,14 +267,20 @@ def parse_qasm(qasm_str):
         m_qreg = re.match(r"^qreg\s+([A-Za-z_][A-Za-z0-9_]*)\s*\[(\d+)\]$", line)
         if m_qreg:
             name, size = m_qreg.group(1), int(m_qreg.group(2))
+            if name in qreg_map:
+                raise ValueError(f"Line {line_no}: Duplicate quantum register '{name}'")
             qreg_map[name] = (total_qubits, size)
+            q_layout.append((name, size))
             total_qubits += size
             continue
 
         m_creg = re.match(r"^creg\s+([A-Za-z_][A-Za-z0-9_]*)\s*\[(\d+)\]$", line)
         if m_creg:
             name, size = m_creg.group(1), int(m_creg.group(2))
+            if name in creg_map:
+                raise ValueError(f"Line {line_no}: Duplicate classical register '{name}'")
             creg_map[name] = (total_cbits, size)
+            c_layout.append((name, size))
             total_cbits += size
             continue
 
@@ -267,6 +290,14 @@ def parse_qasm(qasm_str):
             qr, qidx, cr, cidx = m_meas.group(1), int(m_meas.group(2)), m_meas.group(3), int(m_meas.group(4))
             if qr not in qreg_map or cr not in creg_map:
                 raise ValueError(f"Line {line_no}: Unknown register in measurement: {line}")
+            if qidx < 0 or qidx >= qreg_map[qr][1]:
+                raise ValueError(
+                    f"Line {line_no}: Qubit index {qidx} out of bounds for register '{qr}' of size {qreg_map[qr][1]}"
+                )
+            if cidx < 0 or cidx >= creg_map[cr][1]:
+                raise ValueError(
+                    f"Line {line_no}: Classical bit index {cidx} out of bounds for register '{cr}' of size {creg_map[cr][1]}"
+                )
             global_q = qreg_map[qr][0] + qidx
             global_c = creg_map[cr][0] + cidx
             ops.append(Op("measure", (global_q,), (global_c,)))
@@ -278,6 +309,10 @@ def parse_qasm(qasm_str):
             qr, qidx = m_reset.group(1), int(m_reset.group(2))
             if qr not in qreg_map:
                 raise ValueError(f"Line {line_no}: Unknown quantum register: {qr}")
+            if qidx < 0 or qidx >= qreg_map[qr][1]:
+                raise ValueError(
+                    f"Line {line_no}: Qubit index {qidx} out of bounds for register '{qr}' of size {qreg_map[qr][1]}"
+                )
             global_q = qreg_map[qr][0] + qidx
             ops.append(Op("reset", (global_q,)))
             continue
@@ -297,6 +332,10 @@ def parse_qasm(qasm_str):
             reg, idx = m_arg.group(1), int(m_arg.group(2))
             if reg not in qreg_map:
                 raise ValueError(f"Line {line_no}: Unknown register '{reg}'")
+            if idx < 0 or idx >= qreg_map[reg][1]:
+                raise ValueError(
+                    f"Line {line_no}: Qubit index {idx} out of bounds for register '{reg}' of size {qreg_map[reg][1]}"
+                )
             q_indices.append(qreg_map[reg][0] + idx)
 
         # Standardise gate names
@@ -308,6 +347,15 @@ def parse_qasm(qasm_str):
 
         ops.append(Op(norm_name, tuple(q_indices)))
 
+    return ops, total_qubits, total_cbits, q_layout, c_layout
+
+
+def parse_qasm(qasm_str):
+    """
+    Parses OpenQASM 2.0 text representation into (ops, num_qubits).
+    Maps Qniverse gate identifiers to lowercase profiler Op names.
+    """
+    ops, total_qubits, _, _, _ = parse_qasm_full(qasm_str)
     return ops, total_qubits
 
 
@@ -421,20 +469,24 @@ def to_qniverse(ops, num_qubits):
 
     for o in ops:
         if o.name == "measure":
-            gate_fn = getattr(qg, "measure")
+            gate_fn = getattr(qg, "measure", None)
+            if gate_fn is None:
+                raise ValueError("Documented gate 'measure' not found in qniverse.gates")
             qc.add_gate(gate_fn, q[o.qubits[0]], c[o.cbits[0]])
         elif o.name == "barrier":
             gate_fn = getattr(qg, "barrier", None)
-            if gate_fn:
-                if len(o.qubits) <= 2:
-                    qc.add_gate(gate_fn, *(q[idx] for idx in o.qubits))
-                else:
-                    for pair in _decompose_wide_barrier(o.qubits):
-                        qc.add_gate(gate_fn, *(q[idx] for idx in pair))
+            if gate_fn is None:
+                raise ValueError("Documented gate 'barrier' not found in qniverse.gates")
+            if len(o.qubits) <= 2:
+                qc.add_gate(gate_fn, *(q[idx] for idx in o.qubits))
+            else:
+                for pair in _decompose_wide_barrier(o.qubits):
+                    qc.add_gate(gate_fn, *(q[idx] for idx in pair))
         elif o.name == "reset":
             gate_fn = getattr(qg, "reset", None)
-            if gate_fn:
-                qc.add_gate(gate_fn, q[o.qubits[0]])
+            if gate_fn is None:
+                raise ValueError("Documented gate 'reset' not found in qniverse.gates")
+            qc.add_gate(gate_fn, q[o.qubits[0]])
         else:
             gate_fn = getattr(qg, o.name, None)
             if gate_fn is None:
@@ -477,7 +529,7 @@ def _tests():
 
     # 2) every rule is equivalent to the original gate (up to global phase)
     for name, n in [("id", 1), ("x", 1), ("y", 1), ("z", 1), ("s", 1), ("sdg", 1),
-                    ("cz", 2), ("cy", 2), ("swap", 2), ("ccx", 3)]:
+                    ("cz", 2), ("cy", 2), ("ch", 2), ("swap", 2), ("ccx", 3), ("cswap", 3)]:
         orig = [Op(name, tuple(range(n)))]
         new, rep = decompose(orig, n, {"h", "t", "tdg", "cx"})
         assert new is not None, (name, rep)

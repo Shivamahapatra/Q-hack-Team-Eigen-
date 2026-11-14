@@ -25,16 +25,37 @@ def _parse_wire(w):
     m = _REG.search(repr(w))
     if not m:
         raise ValueError(f"cannot read wire {w!r}")
-    return m.group(1), m.group(3), int(m.group(4))
+    kind = m.group(1)
+    reg_size = int(m.group(2))
+    reg_name = m.group(3)
+    idx = int(m.group(4))
+    if idx < 0 or idx >= reg_size:
+        raise ValueError(f"wire index {idx} out of bounds for register '{reg_name}' of size {reg_size}")
+    return kind, reg_name, idx
 
 
 def _register_sizes(qc):
     """Return {name: size} for quantum and classical registers, in order."""
     q_sizes, c_sizes = {}, {}
-    for reg in qc.registers:
-        m = re.search(r"(Quantum|Classical)Register\((\d+), '([^']+)'\)", repr(reg))
+    for reg in getattr(qc, "registers", ()):
+        m = re.search(r"(Quantum|Classical)Register\((\d+), ['\"]([^'\"]+)['\"]\)", repr(reg))
+        if not m:
+            raise ValueError(f"cannot read register {reg!r}")
         (q_sizes if m.group(1) == "Quantum" else c_sizes)[m.group(3)] = int(m.group(2))
     return q_sizes, c_sizes
+
+
+def _decompose_wide_barrier(qubits):
+    """Decomposes >2-qubit barriers into forward-and-backward 2-qubit barrier pairs."""
+    if len(qubits) <= 2:
+        return [qubits]
+    pairs = []
+    n = len(qubits)
+    for i in range(n - 1):
+        pairs.append((qubits[i], qubits[i + 1]))
+    for i in range(n - 3, -1, -1):
+        pairs.append((qubits[i], qubits[i + 1]))
+    return pairs
 
 
 def from_qniverse(qc):
@@ -52,11 +73,20 @@ def from_qniverse(qc):
     ops, warnings = [], []
     for gate, wires in qc.operations:
         name = str(gate.name).lower()
+        if name == "cnot":
+            name = "cx"
+        elif name == "toffoli":
+            name = "ccx"
         qubits, cbits = [], []
         for w in wires:
             kind, reg, idx = _parse_wire(w)
-            (qubits if kind == "Qubit" else cbits).append(
-                (q_off if kind == "Qubit" else c_off)[reg] + idx)
+            sizes_map = q_sizes if kind == "Qubit" else c_sizes
+            off_map = q_off if kind == "Qubit" else c_off
+            if reg not in off_map:
+                raise ValueError(f"wire references undeclared {kind} register '{reg}'")
+            if idx < 0 or idx >= sizes_map[reg]:
+                raise ValueError(f"wire index {idx} out of bounds for register '{reg}' of size {sizes_map[reg]}")
+            (qubits if kind == "Qubit" else cbits).append(off_map[reg] + idx)
         if name in PARAMETERISED:
             # TODO: find where the angle lives (print(vars(gate)) for an rz gate).
             warnings.append(f"parameterised gate '{name}' read WITHOUT its angle")
@@ -70,19 +100,35 @@ def to_qniverse(ops, num_qubits, num_clbits):
     from qniverse.QniverseCircuit import QniverseCircuit, QuantumRegister, ClassicalRegister
 
     qc = QniverseCircuit()
-    q = QuantumRegister(num_qubits, "q")
-    qc.add_register(q)
+    q = None
+    if num_qubits > 0:
+        q = QuantumRegister(num_qubits, "q")
+        qc.add_register(q)
     c = None
-    if num_clbits:
+    if num_clbits > 0:
         c = ClassicalRegister(num_clbits, "c")
         qc.add_register(c)
 
     for o in ops:
         if o.name == "measure":
-            qc.add_gate(G.measure, q[o.qubits[0]], c[o.cbits[0]])
-        elif o.name in ("barrier", "reset"):
-            # TODO: confirm the call for barrier/reset in the notebooks.
-            raise NotImplementedError(f"building '{o.name}' not verified yet")
+            gate = getattr(G, "measure", None)
+            if gate is None:
+                raise ValueError("gate 'measure' not found in qniverse.gates")
+            qc.add_gate(gate, q[o.qubits[0]], c[o.cbits[0]])
+        elif o.name == "barrier":
+            gate = getattr(G, "barrier", None)
+            if gate is None:
+                raise ValueError("gate 'barrier' not found in qniverse.gates")
+            if len(o.qubits) <= 2:
+                qc.add_gate(gate, *[q[i] for i in o.qubits])
+            else:
+                for pair in _decompose_wide_barrier(o.qubits):
+                    qc.add_gate(gate, *[q[i] for i in pair])
+        elif o.name == "reset":
+            gate = getattr(G, "reset", None)
+            if gate is None:
+                raise ValueError("gate 'reset' not found in qniverse.gates")
+            qc.add_gate(gate, q[o.qubits[0]])
         elif o.name in PARAMETERISED:
             raise NotImplementedError(f"rebuilding '{o.name}' needs its angle")
         else:

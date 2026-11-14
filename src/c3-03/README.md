@@ -111,8 +111,13 @@ Features:
 ```json
 {
   "status": "OK",
-  "passes_enabled": ["identity_removal", "self_inverse_cancellation", "cx_cancellation"],
-  "passes_applied": ["cx_cancellation", "identity_removal", "self_inverse_cancellation"],
+  "passes_enabled": [
+    "identity_removal", "self_inverse_cancellation", "cx_cancellation",
+    "x_cancellation", "y_cancellation", "z_cancellation", "h_cancellation",
+    "cy_cancellation", "cz_cancellation", "ch_cancellation", "swap_cancellation",
+    "ccx_cancellation", "cswap_cancellation", "s_sdg_cancellation", "t_tdg_cancellation"
+  ],
+  "passes_applied": ["identity_removal", "self_inverse_cancellation"],
   "before": {
     "total_gates": 9,
     "by_type": {"id": 1, "h": 3, "x": 2, "cx": 2, "z": 1},
@@ -142,8 +147,8 @@ Features:
     "equivalent": true,
     "mathematical_equivalence_verified": true,
     "structural_preservation_verified": true,
-    "method": "unitary_prefix_matrix_and_measurement_preservation",
-    "details": "Unitary prefix mathematically verified via equal_up_to_phase; terminal measurements verified structurally in-order."
+    "method": "unitary_prefix_matrix_and_non_unitary_structural_placement",
+    "details": "Unitary prefix mathematically verified via equal_up_to_phase; measurements and barriers verified structurally in-order without boundary crossing."
   },
   "warnings": [
     "Circuit contains non-unitary operations (measure/barrier/reset) preserved structurally."

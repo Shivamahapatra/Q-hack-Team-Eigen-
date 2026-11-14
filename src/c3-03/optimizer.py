@@ -10,6 +10,7 @@ import sys
 import copy
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Any, Dict, Set
+import numpy as np
 
 # Ensure parent directory is accessible for sibling imports (JupyterLab-safe)
 _file = globals().get("__file__")
@@ -23,7 +24,7 @@ for _p in _candidates:
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.insert(0, _p)
 
-from c1_01_final import Op, profile, unitary, equal_up_to_phase, NON_UNITARY
+from c1_01_final import Op, profile, unitary, equal_up_to_phase, NON_UNITARY, _op_matrix
 import qniverse_adapter as qa
 
 # Verified Qniverse SDK imports (available only when running on C-DAC Qniverse platform)
@@ -54,12 +55,6 @@ PASS_CSWAP_CANCELLATION = "cswap_cancellation"
 PASS_S_SDG_CANCELLATION = "s_sdg_cancellation"
 PASS_T_TDG_CANCELLATION = "t_tdg_cancellation"
 
-DEFAULT_PASSES = [
-    PASS_IDENTITY_REMOVAL,
-    PASS_SELF_INVERSE_CANCELLATION,
-    PASS_CX_CANCELLATION,
-]
-
 SUPPORTED_PASSES = [
     PASS_IDENTITY_REMOVAL,
     PASS_SELF_INVERSE_CANCELLATION,
@@ -77,6 +72,8 @@ SUPPORTED_PASSES = [
     PASS_S_SDG_CANCELLATION,
     PASS_T_TDG_CANCELLATION,
 ]
+
+DEFAULT_PASSES = list(SUPPORTED_PASSES)
 
 SELF_INVERSE_GATES = {
     "x", "y", "z", "h", "cx", "cy", "cz", "ch", "swap", "ccx", "cswap"
@@ -204,11 +201,51 @@ def _validate_circuit_ops(ops: List[Op], num_qubits: int, num_clbits: int) -> No
             raise ValueError(f"Unsupported or unrecognized operation '{op.name}' in circuit.")
 
 
+def _delimiter_dressed_unitary(ops: List[Op], n: int, delimiter_names: Set[str]) -> np.ndarray:
+    """
+    Computes a delimiter-dressed unitary by replacing each delimiter operation on its
+    target wires with a unique, non-commuting SU(2) rotation per wire.
+    This catches any illegal cancellation or commutation across a delimiter on a shared wire,
+    while permitting valid cancellations on completely disjoint wires.
+    """
+    u = np.eye(2 ** n, dtype=complex)
+    delim_idx = 0
+    for o in ops:
+        gname = o.name.lower()
+        if gname in delimiter_names:
+            delim_idx += 1
+            for q in o.qubits:
+                if 0 <= q < n:
+                    theta = 0.3719 * delim_idx + 0.113 * (q + 1)
+                    phi = 0.7182 * delim_idx + 0.293 * (q + 1)
+                    psi = 0.5147 * delim_idx + 0.179 * (q + 1)
+                    rx = np.array([
+                        [np.cos(theta / 2.0), -1j * np.sin(theta / 2.0)],
+                        [-1j * np.sin(theta / 2.0), np.cos(theta / 2.0)]
+                    ], dtype=complex)
+                    rz = np.array([
+                        [np.exp(-1j * phi / 2.0), 0.0],
+                        [0.0, np.exp(1j * phi / 2.0)]
+                    ], dtype=complex)
+                    ry = np.array([
+                        [np.cos(psi / 2.0), -np.sin(psi / 2.0)],
+                        [np.sin(psi / 2.0), np.cos(psi / 2.0)]
+                    ], dtype=complex)
+                    b_mat = rx @ rz @ ry
+                    full_b = np.array([[1.0]], dtype=complex)
+                    for k in range(n):
+                        full_b = np.kron(full_b, b_mat if k == q else np.eye(2, dtype=complex))
+                    u = full_b @ u
+        elif gname not in NON_UNITARY:
+            u = _op_matrix(Op(gname, o.qubits, o.cbits), n) @ u
+    return u
+
+
 def _verify_structural_placement(orig_ops: List[Op], opt_ops: List[Op], delimiter_names: Set[str]) -> bool:
     """
     Verifies that all delimiter operations (e.g. non-unitaries or barriers) match exactly in identity,
     operands, and sequence, AND that unitary operations maintain their relative placement
-    without ever crossing any delimiter boundary (DEF-05, DEF-06).
+    without ever crossing or illegally cancelling across any delimiter boundary (DEF-05, DEF-06, BUG-01).
     """
     # 1. Delimiters must match exactly in name, qubits, cbits, and order
     orig_delims = [o for o in orig_ops if o.name in delimiter_names]
@@ -239,6 +276,15 @@ def _verify_structural_placement(orig_ops: List[Op], opt_ops: List[Op], delimite
         it = iter(orig_seg)
         if not all(op in it for op in opt_seg):
             return False
+
+    # 4. Verify per-wire delimiter boundary invariance (catches illegal cancellation across shared delimiters)
+    if orig_delims:
+        n_q = max((q for o in orig_ops + opt_ops for q in o.qubits), default=-1) + 1
+        if n_q > 0:
+            u_d_orig = _delimiter_dressed_unitary(orig_ops, n_q, delimiter_names)
+            u_d_opt = _delimiter_dressed_unitary(opt_ops, n_q, delimiter_names)
+            if not equal_up_to_phase(u_d_orig, u_d_opt):
+                return False
 
     return True
 
@@ -747,7 +793,7 @@ def verify_equivalence(
             }
 
     # ------------------------------------------------- Parameterized Gates Check (DEF-04)
-    if any(o.name in PARAMETERISED_GATES for o in original_ops) or any(o.name in PARAMETERISED_GATES for o in optimized_ops):
+    if any(o.name.lower() in PARAMETERISED_GATES for o in original_ops) or any(o.name.lower() in PARAMETERISED_GATES for o in optimized_ops):
         return {
             "type": "parameterized_unsupported",
             "equivalent": False,
@@ -791,8 +837,8 @@ def verify_equivalence(
                 "details": f"Unsupported or unrecognized operation '{op.name}'"
             }
 
-    has_measure = any(o.name == "measure" for o in original_ops)
-    has_reset = any(o.name == "reset" for o in original_ops)
+    has_measure = any(o.name == "measure" for o in original_ops) or any(o.name == "measure" for o in optimized_ops)
+    has_reset = any(o.name == "reset" for o in original_ops) or any(o.name == "reset" for o in optimized_ops)
 
     # ------------------------------------------------- CASE A: Purely Unitary (+ Barriers)
     if not has_measure and not has_reset:
@@ -902,7 +948,7 @@ def optimize(
 
     # Validate passes configuration
     if enabled_passes is None:
-        selected_passes = list(SUPPORTED_PASSES)
+        selected_passes = list(DEFAULT_PASSES)
     else:
         for p in enabled_passes:
             if p not in SUPPORTED_PASSES:
@@ -961,12 +1007,15 @@ def optimize(
         except Exception as e:
             raise ValueError(f"Failed to extract operations from QniverseCircuit: {e}")
     elif isinstance(qc, str):
-        # OpenQASM string fallback
+        # OpenQASM string fallback preserving register layouts and classical bit counts
         import c1_01_final as cf
-        ops, num_qubits = cf.parse_qasm(qc)
-        num_clbits = max((c for o in ops for c in o.cbits), default=-1) + 1
-        q_layout = [("q", num_qubits)] if num_qubits > 0 else []
-        c_layout = [("c", num_clbits)] if num_clbits > 0 else []
+        if hasattr(cf, "parse_qasm_full"):
+            ops, num_qubits, num_clbits, q_layout, c_layout = cf.parse_qasm_full(qc)
+        else:
+            ops, num_qubits = cf.parse_qasm(qc)
+            num_clbits = max((c for o in ops for c in o.cbits), default=-1) + 1
+            q_layout = [("q", num_qubits)] if num_qubits > 0 else []
+            c_layout = [("c", num_clbits)] if num_clbits > 0 else []
     elif isinstance(qc, list):
         ops = list(qc)
         num_qubits = max((q for o in ops for q in o.qubits), default=-1) + 1
@@ -1156,13 +1205,30 @@ def draw_text(
             print(empty_diag)
         return empty_diag
 
-    # Schedule operations into column layers using DAG / depth rules
+    # Schedule operations into visual columns while tracking exact execution depth
     free = [0] * num_qubits
+    gate_free = [0] * num_qubits
+    depth = 0
     layers: List[Dict[int, str]] = []
 
     for o in ops:
+        if not o.qubits:
+            continue
+        # Exact depth tracking matching c1_01_final.profile()
+        d_start = max((gate_free[q] for q in o.qubits if 0 <= q < num_qubits), default=0)
+        if o.name.lower() == "barrier":
+            for q in o.qubits:
+                if 0 <= q < num_qubits:
+                    gate_free[q] = d_start
+        else:
+            for q in o.qubits:
+                if 0 <= q < num_qubits:
+                    gate_free[q] = d_start + 1
+            depth = max(depth, d_start + 1)
+
+        # Visual column placement
         sym_map = _gate_symbols(o)
-        start = max((free[q] for q in o.qubits), default=0)
+        start = max((free[q] for q in o.qubits if 0 <= q < num_qubits), default=0)
 
         # Ensure layers list has enough capacity up to column start
         while len(layers) <= start:
@@ -1176,18 +1242,19 @@ def draw_text(
 
         # Place symbols into layers[start]
         for q, sym in sym_map.items():
-            if q < num_qubits:
+            if 0 <= q < num_qubits:
                 layers[start][q] = sym
 
-        # Update next free layer for the qubits
+        # Update next free visual column for the qubits
         for q in o.qubits:
-            if q < num_qubits:
+            if 0 <= q < num_qubits:
                 free[q] = start + 1
 
-    num_columns = len(layers)
+    num_visual_cols = len(layers)
+    num_columns = depth
     label_width = len(str(num_qubits - 1))
 
-    if num_columns == 0:
+    if num_visual_cols == 0:
         lines = [f"q{q:<{label_width}}: --" for q in range(num_qubits)]
         diag = CircuitDiagram("\n".join(lines), num_columns=0)
         if print_output:
@@ -1196,7 +1263,7 @@ def draw_text(
 
     # Calculate column widths across all qubits
     col_widths = []
-    for c in range(num_columns):
+    for c in range(num_visual_cols):
         w = max((len(layers[c].get(q, "")) for q in range(num_qubits)), default=1)
         col_widths.append(max(w, 1))
 
@@ -1205,7 +1272,7 @@ def draw_text(
     for q in range(num_qubits):
         prefix = f"q{q:<{label_width}}: --"
         wire_segments = []
-        for c in range(num_columns):
+        for c in range(num_visual_cols):
             w = col_widths[c]
             sym = layers[c].get(q)
             if sym is None:

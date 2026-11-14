@@ -1036,6 +1036,9 @@ class TestQC0303Optimizer(unittest.TestCase):
             ([Op("h", (0,)), Op("x", (1,)), Op("cx", (0, 1)), Op("cx", (1, 2)), Op("z", (2,))], 3),
             # 6. Empty circuit
             ([], 2),
+            # 7. Circuit with barrier (BUG-04: num_columns matches profile depth)
+            ([Op("h", (0,)), Op("barrier", (0, 1)), Op("h", (0,))], 2),
+            ([Op("h", (0,)), Op("barrier", (0, 1)), Op("h", (1,))], 2),
         ]
 
         for ops, nq in test_cases:
@@ -1099,6 +1102,91 @@ class TestQC0303Optimizer(unittest.TestCase):
         # q1 should contain (+), T
         self.assertIn("(+)", lines[1])
         self.assertIn("T", lines[1])
+
+    # ---------------------------------- BUG-01 TO BUG-08 REGRESSION TESTS
+    def test_bug01_illegal_cancellation_across_shared_barrier_rejected(self):
+        """BUG-01: verify_equivalence rejects circuits where gates cancelled across a shared barrier."""
+        orig = [Op("x", (0,)), Op("barrier", (0,)), Op("x", (0,))]
+        corrupted = [Op("barrier", (0,))]
+        res = verify_equivalence(orig, corrupted, 1)
+        self.assertFalse(res["equivalent"])
+        self.assertFalse(res["structural_preservation_verified"])
+
+        # Terminal measurement variant with illegal cancellation across barrier
+        orig_term = [Op("h", (0,)), Op("x", (0,)), Op("barrier", (0,)), Op("x", (0,)), Op("measure", (0,), (0,))]
+        corrupted_term = [Op("h", (0,)), Op("barrier", (0,)), Op("measure", (0,), (0,))]
+        res_term = verify_equivalence(orig_term, corrupted_term, 1)
+        self.assertFalse(res_term["equivalent"])
+        self.assertFalse(res_term["structural_preservation_verified"])
+
+        # Mid-circuit measurement variant with illegal cancellation across measurement
+        orig_mid = [Op("x", (0,)), Op("measure", (0,), (0,)), Op("x", (0,))]
+        corrupted_mid = [Op("measure", (0,), (0,))]
+        res_mid = verify_equivalence(orig_mid, corrupted_mid, 1)
+        self.assertFalse(res_mid["structural_preservation_verified"])
+
+    def test_bug02_uppercase_op_names_normalized_and_optimized(self):
+        """BUG-02: Uppercase gate names in Op are normalized and optimize cleanly without crashing."""
+        ops = [Op("H", (0,)), Op("H", (0,)), Op("X", (1,))]
+        res = optimize(ops)
+        self.assertEqual(res.report["gates_removed"], 2)
+        self.assertEqual(res.report["after"]["total_gates"], 1)
+        self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    def test_bug03_out_of_bounds_register_index_rejected_in_qasm_and_adapter(self):
+        """BUG-03: Out-of-bounds register index in multi-register QASM or wire repr raises ValueError."""
+        from c1_01_final import parse_qasm
+        bad_qasm = "OPENQASM 2.0;\nqreg a[2];\nqreg b[2];\nx a[2];\n"
+        with self.assertRaises(ValueError) as ctx:
+            parse_qasm(bad_qasm)
+        self.assertIn("out of bounds", str(ctx.exception).lower())
+
+        with self.assertRaises(ValueError) as ctx2:
+            qa._parse_wire("Qubit(QuantumRegister(2, 'a'), 2)")
+        self.assertIn("out of bounds", str(ctx2.exception).lower())
+
+    def test_bug05_verify_equivalence_checks_optimized_ops_for_non_unitary(self):
+        """BUG-05: verify_equivalence detects injected reset or measure in optimized_ops."""
+        res_reset = verify_equivalence([Op("h", (0,))], [Op("h", (0,)), Op("reset", (0,))], 1)
+        self.assertNotEqual(res_reset["type"], "unitary")
+        self.assertFalse(res_reset["mathematical_equivalence_verified"])
+        self.assertFalse(res_reset["structural_preservation_verified"])
+
+        res_meas = verify_equivalence([Op("h", (0,))], [Op("h", (0,)), Op("measure", (0,), (0,))], 1)
+        self.assertNotEqual(res_meas["type"], "unitary")
+        self.assertFalse(res_meas["structural_preservation_verified"])
+
+    def test_bug06_qasm_string_preserves_multi_registers_and_unmeasured_cregs(self):
+        """BUG-06: Optimizing a raw OpenQASM string preserves multi-register layout and declared creg size."""
+        qasm_str = (
+            "OPENQASM 2.0;\n"
+            'include "qelib1.inc";\n'
+            "qreg data[2];\n"
+            "qreg anc[1];\n"
+            "creg c_out[4];\n"
+            "x anc[0];\n"
+            "x anc[0];\n"
+            "h data[0];\n"
+            "measure data[0] -> c_out[0];\n"
+        )
+        res = optimize(qasm_str)
+        self.assertEqual(res.report["gates_removed"], 2)
+        self.assertEqual(res.circuit.num_qubits, 3)
+        self.assertEqual(res.circuit.num_clbits, 4)
+        reg_reprs = [repr(r) for r in res.circuit.registers]
+        self.assertIn("QuantumRegister(2, 'data')", reg_reprs)
+        self.assertIn("QuantumRegister(1, 'anc')", reg_reprs)
+        self.assertIn("ClassicalRegister(4, 'c_out')", reg_reprs)
+
+    def test_bug07_decompose_supports_ch_and_cswap(self):
+        """BUG-07: decompose() in c1_01_final supports ch and cswap into Clifford+T."""
+        from c1_01_final import decompose
+        for gname, nq in [("ch", 2), ("cswap", 3)]:
+            orig = [Op(gname, tuple(range(nq)))]
+            dec, rep = decompose(orig, nq, {"h", "t", "tdg", "cx"})
+            self.assertEqual(rep["status"], "OK")
+            self.assertIsNotNone(dec)
+            self.assertTrue(equal_up_to_phase(unitary(orig, nq), unitary(dec, nq)))
 
 
 if __name__ == "__main__":
