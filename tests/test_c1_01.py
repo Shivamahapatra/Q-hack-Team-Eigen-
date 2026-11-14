@@ -2,8 +2,17 @@ import unittest
 import sys
 import os
 
-# Add src to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+# Add src to path (safe for both standalone scripts and JupyterLab/IPython cells)
+_file = globals().get("__file__")
+_base_dir = os.path.dirname(os.path.abspath(_file)) if _file else os.getcwd()
+_candidates = [
+    os.path.abspath(os.path.join(_base_dir, "..", "src")),
+    os.path.abspath(os.path.join(_base_dir, "src")),
+    _base_dir,
+]
+for _p in _candidates:
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from c1_01_final import (
     Op, profile, decompose, analyze, from_qniverse, to_qniverse,

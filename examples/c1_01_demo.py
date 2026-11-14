@@ -7,8 +7,17 @@ import json
 import os
 import sys
 
-# Ensure src is accessible
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+# Ensure src is accessible (safe for scripts and Jupyter notebooks)
+_file = globals().get("__file__")
+_base_dir = os.path.dirname(os.path.abspath(_file)) if _file else os.getcwd()
+_candidates = [
+    os.path.abspath(os.path.join(_base_dir, "..", "src")),
+    os.path.abspath(os.path.join(_base_dir, "src")),
+    _base_dir,
+]
+for _p in _candidates:
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from c1_01_final import analyze
 
@@ -45,7 +54,7 @@ measure q[0] -> c[0];
         print(f"  {k:22s}: {v}")
 
     # Save to results/c1_01_sample_report.json
-    results_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "results"))
+    results_dir = os.path.abspath(os.path.join(_base_dir, "..", "results"))
     os.makedirs(results_dir, exist_ok=True)
     report_path = os.path.join(results_dir, "c1_01_report.json")
 

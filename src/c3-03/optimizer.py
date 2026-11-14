@@ -11,10 +11,17 @@ import copy
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Any, Dict, Set
 
-# Ensure parent directory is accessible for sibling imports
-_parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _parent_dir not in sys.path:
-    sys.path.insert(0, _parent_dir)
+# Ensure parent directory is accessible for sibling imports (JupyterLab-safe)
+_file = globals().get("__file__")
+_base_dir = os.path.dirname(os.path.abspath(_file)) if _file else os.getcwd()
+_candidates = [
+    os.path.abspath(os.path.join(_base_dir, "..")),
+    os.path.abspath(os.path.join(_base_dir, "src")),
+    _base_dir,
+]
+for _p in _candidates:
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from c1_01_final import Op, profile, unitary, equal_up_to_phase, NON_UNITARY
 import qniverse_adapter as qa
@@ -31,6 +38,7 @@ SUPPORTED_PASSES = [
 ]
 
 SELF_INVERSE_GATES = {"x", "h", "z"}
+NON_UNITARY_GATES = {"measure", "reset", "barrier"}
 
 PARAMETERISED_GATES = {
     "rx", "ry", "rz", "p", "u1", "u2", "u3",
@@ -210,63 +218,79 @@ def _pass_identity_removal(ops: List[Op]) -> Tuple[List[Op], int]:
     return new_ops, removed
 
 
+def _cancel_per_wire_adjacent_pairs(ops: List[Op], target_gates: Set[str]) -> Tuple[List[Op], int]:
+    """
+    Cancels pairs of identical self-inverse operations using a per-qubit frontier.
+
+    Frontier tracking:
+    For every qubit touched by an operation, we maintain the index of the most recent operation.
+    Two operations ops[i] and ops[j] (where i < j) cancel if:
+      - ops[i].name == ops[j].name and ops[j].name in target_gates
+      - ops[i].qubits == ops[j].qubits (exact same qubits in the exact same order)
+      - For EVERY qubit q in ops[j].qubits, last_op_on_qubit[q] == i
+        (meaning no intervening operation has touched any qubit that this gate operates on)
+      - Neither is a barrier, measurement, reset, or other non-unitary delimiter.
+
+    Operations on disjoint/unrelated qubits do NOT touch these wires and therefore do NOT block cancellation.
+    Barriers, measurements, resets, or operations on shared qubits update the frontier on their wires and block cancellation.
+    """
+    last_op_on_qubit: Dict[int, Optional[int]] = {}
+    cancelled_indices: Set[int] = set()
+
+    for j, op in enumerate(ops):
+        is_delimiter = op.name in NON_UNITARY_GATES
+        is_target = (not is_delimiter) and (op.name in target_gates)
+
+        if is_target and op.qubits:
+            cand_i = last_op_on_qubit.get(op.qubits[0])
+
+            if (
+                cand_i is not None
+                and cand_i not in cancelled_indices
+                and all(last_op_on_qubit.get(q) == cand_i for q in op.qubits)
+                and ops[cand_i].name == op.name
+                and ops[cand_i].qubits == op.qubits
+                and ops[cand_i].name not in NON_UNITARY_GATES
+            ):
+                # Valid cancellation found
+                cancelled_indices.add(cand_i)
+                cancelled_indices.add(j)
+                for q in op.qubits:
+                    last_op_on_qubit[q] = None
+                continue
+
+        # Non-cancelled op updates the frontier on all qubits it acts on
+        for q in op.qubits:
+            last_op_on_qubit[q] = j
+
+    if not cancelled_indices:
+        return ops, 0
+
+    new_ops = [op for idx, op in enumerate(ops) if idx not in cancelled_indices]
+    return new_ops, len(cancelled_indices)
+
+
 def _pass_self_inverse_cancellation(ops: List[Op]) -> Tuple[List[Op], int]:
     """
     PASS 2: SELF-INVERSE GATE CANCELLATION
-    Cancels identical adjacent gates operating on the exact same qubit:
-    - X-X
-    - H-H
-    - Z-Z
-    Uses conservative adjacency: only cancels when strictly consecutive in the sequence.
+    Cancels identical self-inverse gates operating on the exact same qubits:
+    - Uses per-wire frontier tracking to allow cancellation across gates on disjoint qubits.
+    - Blocked if an intervening operation touches any shared qubit.
+    - Blocked by barriers, measurements, resets, or classically conditioned gates.
     """
-    new_ops = []
-    removed = 0
-    i = 0
-    n = len(ops)
-    while i < n:
-        if (
-            i + 1 < n
-            and ops[i].name in SELF_INVERSE_GATES
-            and ops[i].name == ops[i + 1].name
-            and ops[i].qubits == ops[i + 1].qubits
-        ):
-            # Consecutive identical self-inverse pair found
-            removed += 2
-            i += 2
-        else:
-            new_ops.append(ops[i])
-            i += 1
-    return new_ops, removed
+    return _cancel_per_wire_adjacent_pairs(ops, SELF_INVERSE_GATES)
 
 
 def _pass_cx_cancellation(ops: List[Op]) -> Tuple[List[Op], int]:
     """
     PASS 3: CX CANCELLATION
-    Cancels consecutive CX operations only when:
+    Cancels CX operations when:
     - Both are CX gates.
-    - Control qubits match.
-    - Target qubits match.
-    - Control and target ordering is identical (e.g. (c, t) == (c, t)).
-    - No intervening operation between them.
+    - Control and target qubits match in exact order: (c, t) == (c, t).
+    - Uses per-wire frontier tracking (neither control nor target touched in between).
+    - Blocked by barriers, measurements, resets, or any intervening op touching control or target.
     """
-    new_ops = []
-    removed = 0
-    i = 0
-    n = len(ops)
-    while i < n:
-        if (
-            i + 1 < n
-            and ops[i].name == "cx"
-            and ops[i + 1].name == "cx"
-            and ops[i].qubits == ops[i + 1].qubits
-        ):
-            # Consecutive identical CX pair with matching control and target
-            removed += 2
-            i += 2
-        else:
-            new_ops.append(ops[i])
-            i += 1
-    return new_ops, removed
+    return _cancel_per_wire_adjacent_pairs(ops, {"cx"})
 
 
 def _run_optimization_pipeline(ops: List[Op], passes: List[str]) -> Tuple[List[Op], List[str]]:

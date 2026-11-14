@@ -9,12 +9,17 @@ import os
 import sys
 import json
 
-_current_dir = os.path.dirname(os.path.abspath(__file__))
-_src_dir = os.path.abspath(os.path.join(_current_dir, ".."))
-if _src_dir not in sys.path:
-    sys.path.insert(0, _src_dir)
-if _current_dir not in sys.path:
-    sys.path.insert(0, _current_dir)
+_file = globals().get("__file__")
+_base_dir = os.path.dirname(os.path.abspath(_file)) if _file else os.getcwd()
+_candidates = [
+    os.path.abspath(os.path.join(_base_dir, "..")),
+    os.path.abspath(os.path.join(_base_dir, "src")),
+    _base_dir,
+    os.path.abspath(os.path.join(_base_dir, "src", "c3-03")),
+]
+for _p in _candidates:
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from c1_01_final import Op
 from optimizer import optimize

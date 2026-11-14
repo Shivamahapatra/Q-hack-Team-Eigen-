@@ -6,13 +6,18 @@ import os
 import sys
 import unittest
 
-# Ensure src and src/c3-03 are in sys.path
-_current_dir = os.path.dirname(os.path.abspath(__file__))
-_src_dir = os.path.abspath(os.path.join(_current_dir, ".."))
-if _src_dir not in sys.path:
-    sys.path.insert(0, _src_dir)
-if _current_dir not in sys.path:
-    sys.path.insert(0, _current_dir)
+# Ensure src and src/c3-03 are in sys.path (safe for scripts and Jupyter notebooks)
+_file = globals().get("__file__")
+_base_dir = os.path.dirname(os.path.abspath(_file)) if _file else os.getcwd()
+_candidates = [
+    os.path.abspath(os.path.join(_base_dir, "..")),
+    os.path.abspath(os.path.join(_base_dir, "src")),
+    _base_dir,
+    os.path.abspath(os.path.join(_base_dir, "src", "c3-03")),
+]
+for _p in _candidates:
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from c1_01_final import Op, unitary, equal_up_to_phase
 import qniverse_adapter as qa
@@ -190,6 +195,87 @@ class TestQC0303Optimizer(unittest.TestCase):
         res = optimize(ops)
         self.assertEqual(res.report["gates_removed"], 0)
         self.assertEqual(res.report["after"]["total_gates"], 2)
+
+    # --------------------------------------------- PRIORITY 1: PER-WIRE ADJACENCY TESTS
+    def test_per_wire_x_cancels_across_disjoint_y(self):
+        """P1: X(0), Y(1), X(0) -> X gates cancel across disjoint wire, Y stays."""
+        ops = [Op("x", (0,)), Op("y", (1,)), Op("x", (0,))]
+        res = optimize(ops)
+        self.assertEqual(res.report["gates_removed"], 2)
+        self.assertEqual(res.report["after"]["total_gates"], 1)
+        self.assertEqual(res.report["after"]["by_type"], {"y": 1})
+        self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    def test_per_wire_cx_cancels_across_disjoint_h(self):
+        """P1: CX(0,1), H(2), CX(0,1) -> CX pair cancels across disjoint wire."""
+        ops = [Op("cx", (0, 1)), Op("h", (2,)), Op("cx", (0, 1))]
+        res = optimize(ops)
+        self.assertEqual(res.report["gates_removed"], 2)
+        self.assertEqual(res.report["after"]["total_gates"], 1)
+        self.assertEqual(res.report["after"]["by_type"], {"h": 1})
+        self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    def test_per_wire_cx_blocked_by_intervening_h_on_target(self):
+        """P1: CX(0,1), H(1), CX(0,1) -> does NOT cancel (H touches target qubit 1)."""
+        ops = [Op("cx", (0, 1)), Op("h", (1,)), Op("cx", (0, 1))]
+        res = optimize(ops)
+        self.assertEqual(res.report["gates_removed"], 0)
+        self.assertEqual(res.report["after"]["total_gates"], 3)
+        self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    def test_per_wire_h_blocked_by_shared_barrier(self):
+        """P1: H(0), barrier on (0,1), H(0) -> does NOT cancel (barrier spans qubit 0)."""
+        ops = [Op("h", (0,)), Op("barrier", (0, 1)), Op("h", (0,))]
+        res = optimize(ops)
+        self.assertEqual(res.report["gates_removed"], 0)
+        self.assertEqual(res.report["after"]["total_gates"], 2)
+        self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    def test_per_wire_h_blocked_by_measure(self):
+        """P1: H(0), measure(0 -> c0), H(0) -> does NOT cancel (measure touches qubit 0)."""
+        ops = [Op("h", (0,)), Op("measure", (0,), (0,)), Op("h", (0,))]
+        res = optimize(ops)
+        self.assertEqual(res.report["gates_removed"], 0)
+        self.assertEqual(res.report["after"]["total_gates"], 2)
+        self.assertEqual(res.report["after"]["measurements"], 1)
+        self.assertTrue(res.report["equivalence"]["structural_preservation_verified"])
+        self.assertIsNone(res.report["equivalence"]["equivalent"])
+
+    def test_per_wire_x_cancels_across_disjoint_barrier(self):
+        """P1: X(0), barrier on qubit 1 only, X(0) -> cancels (barrier does not touch qubit 0)."""
+        ops = [Op("x", (0,)), Op("barrier", (1,)), Op("x", (0,))]
+        res = optimize(ops)
+        self.assertEqual(res.report["gates_removed"], 2)
+        self.assertEqual(res.report["after"]["total_gates"], 0)
+        self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    def test_per_wire_depth_and_gate_count_both_decrease(self):
+        """P1: Explicit assertion that depth AND gate count both decrease on one circuit."""
+        ops = [Op("x", (0,)), Op("y", (1,)), Op("x", (0,))]
+        res = optimize(ops)
+        self.assertLess(res.report["after"]["total_gates"], res.report["before"]["total_gates"])
+        self.assertLess(res.report["after"]["depth"], res.report["before"]["depth"])
+        self.assertEqual(res.report["before"]["total_gates"], 3)
+        self.assertEqual(res.report["after"]["total_gates"], 1)
+        self.assertEqual(res.report["before"]["depth"], 2)
+        self.assertEqual(res.report["after"]["depth"], 1)
+        self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    def test_per_wire_cx_cx_cx_blocked_on_shared_qubit(self):
+        """P1: CX(0,1), CX(1,2), CX(0,1) must NOT cancel (the middle gate touches qubit 1)."""
+        ops = [Op("cx", (0, 1)), Op("cx", (1, 2)), Op("cx", (0, 1))]
+        res = optimize(ops)
+        self.assertEqual(res.report["gates_removed"], 0)
+        self.assertEqual(res.report["after"]["total_gates"], 3)
+        self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    def test_per_wire_x_cx_x_blocked_on_shared_qubit(self):
+        """P1: X(0), CX(0,1), X(0) must NOT cancel (the CX touches qubit 0)."""
+        ops = [Op("x", (0,)), Op("cx", (0, 1)), Op("x", (0,))]
+        res = optimize(ops)
+        self.assertEqual(res.report["gates_removed"], 0)
+        self.assertEqual(res.report["after"]["total_gates"], 3)
+        self.assertTrue(res.report["equivalence"]["equivalent"])
 
     # ------------------------------------------------ NON-MUTATION TESTS
     def test_original_circuit_immutability(self):
