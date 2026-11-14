@@ -8,4 +8,5 @@
 | :--- | :--- | :--- | :--- | :--- |
 | 2026-11-13 | Environment & repository setup (Dhruti) | Antigravity | Gemini 3.8 Flash | Machine verification, repository cloning, virtual environment setup, .env template creation, and branch initialization |
 | 2026-11-14 | Team Information & Challenge Pipeline Scoping (Dhruti) | Antigravity | Gemini 3.8 Flash | Drafted comprehensive docs/01_team_info.md detailing member roles, responsibility matrix, and scoping of QC-C1-01, QC-C2-04, and QC-03-03 |
+| 2026-11-14 | Technical Approach Architecture & Specification (Dhruti) | Antigravity | Gemini 3.8 Flash | Authored docs/02_technical_approach.md covering the integrated compilation pipeline, DAG scheduler formulas, optimization rules, and decomposition math |
 
