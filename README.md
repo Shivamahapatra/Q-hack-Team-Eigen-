@@ -49,7 +49,7 @@ All hackathon deliverables are organized across dedicated documents in [`docs/`]
 
 ## 👥 Team Eigen Members
 
+- **Advik Singla** (`adviksingla`) — **Team Leader** & Core Developer
+- **Shiva Mahapatra** (`Shivamahapatra`) — Lead Developer (Architecture & Ingestion)
 - **Dhruti** (`dhruti218`) — Documentation, QA & AI Compliance Lead
-- **Shiva Mahapatra** (`Shivamahapatra`) — Lead Developer (QSDK & Ingestion)
-- **Advik Singla** (`adviksingla`) — Core Developer (Decomposition & Verifier)
 - **Saumitra Gupta** (`saumitraguptafr`) — Presenter & Evaluation Lead
