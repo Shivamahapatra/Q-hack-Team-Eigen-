@@ -109,9 +109,12 @@ result = optimize(
   "gates_removed": 7,
   "reduction_percentage": 77.78,
   "equivalence": {
-    "type": "non_unitary_structural",
+    "type": "terminal_measurement_verified",
     "equivalent": true,
-    "method": "structural_invariance (measurements, barriers, resets preserved in-order)"
+    "mathematical_equivalence_verified": true,
+    "structural_preservation_verified": true,
+    "method": "unitary_prefix_matrix_and_measurement_preservation",
+    "details": "Unitary prefix mathematically verified via equal_up_to_phase; terminal measurements verified structurally in-order."
   },
   "warnings": [
     "Circuit contains non-unitary operations (measure/barrier/reset) preserved structurally."
@@ -121,9 +124,10 @@ result = optimize(
 
 ---
 
-## 5. Safety Restrictions
+## 5. Safety & Register Preservation
+- **Register Architecture Preservation**: Multi-register layouts (`QuantumRegister` and `ClassicalRegister`) maintain their exact names, sizes, ordering, and wire indices. Circuit metadata is deepcopied and preserved intact.
 - **No Gate Reordering**: The sequence of gates is never permuted.
-- **Barriers**: Gates on opposite sides of a `barrier` are never combined or cancelled.
+- **Barriers**: Gates on opposite sides of a `barrier` are never combined or cancelled. Barriers are treated as optimization boundaries, not as non-unitary state-collapsing gates.
 - **Measurements & Resets**: Act as non-unitary boundaries. Gates before and after a measurement/reset cannot cancel across them.
 - **Reversed CX Safeguard**: `CX(0, 1)` followed by `CX(1, 0)` is strictly preserved because $\text{CX}(0, 1)\text{CX}(1, 0) \neq I$.
 - **Error Rejection**: Passing an invalid or unknown pass name immediately raises a descriptive `ValueError`.
@@ -131,12 +135,25 @@ result = optimize(
 ---
 
 ## 6. Equivalence Validation Methodology
-Reuses verified numerical linear algebra utilities from `src/c1_01_final.py`:
-1. **Purely Unitary Circuits**:
+Reuses verified numerical linear algebra utilities from `src/c1_01_final.py` across three rigorous validation tiers:
+
+1. **Tier A: Purely Unitary Circuits (+ Barriers)**:
    - Calculates the exact full system matrix: $U_{\text{orig}} = \prod_k U_k$ and $U_{\text{opt}} = \prod_j U_j$.
    - Validates that $U_{\text{orig}} \approx e^{i\theta} U_{\text{opt}}$ within absolute tolerance $10^{-9}$ using `equal_up_to_phase()`.
-2. **Circuits Containing Non-Unitaries (`measure`, `reset`, `barrier`)**:
-   - Compares the non-unitary sequence structurally: asserts that all measurement targets, classical destination bits, barrier spans, and resets remain identical in order and wire assignment.
+   - Barriers are treated as compilation boundaries and do not affect the unitary matrix, but are verified for structural preservation.
+   - Returns `"equivalent": True` with `"mathematical_equivalence_verified": True`.
+
+2. **Tier B: Circuits with Terminal Measurements**:
+   - Asserts that measurements appear strictly at the end of the circuit execution.
+   - Extracts the unitary operations executed prior to measurements.
+   - Mathematically verifies the unitary prefix up to global phase using `equal_up_to_phase()`.
+   - Structurally checks that all terminal measurement operations, qubit wires, classical target bits, and ordering are preserved.
+   - Returns `"equivalent": True` only when BOTH mathematical and structural checks pass.
+
+3. **Tier C: Circuits with Mid-Circuit Measurements or Resets**:
+   - Because state collapse / non-unitary resets prevent unitary matrix comparison, semantic equivalence is **not** claimed.
+   - Returns `"equivalent": None`, status `"OK_SEMANTIC_UNVERIFIED"`, and an explicit diagnostic warning.
+   - Structural preservation of non-unitary operations is verified and reported separately as `"structural_preservation_verified": True`.
 
 ---
 

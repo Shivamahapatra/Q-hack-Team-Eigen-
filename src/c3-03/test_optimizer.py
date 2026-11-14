@@ -27,7 +27,7 @@ from optimizer import (
 )
 
 
-def _make_mock_circuit(num_qubits, num_clbits, ops):
+def _make_mock_circuit(num_qubits, num_clbits, ops, q_registers=None, c_registers=None):
     """Helper to create a mock QniverseCircuit for testing runtime integration."""
     class Reg:
         def __init__(self, kind, size, name):
@@ -55,16 +55,34 @@ def _make_mock_circuit(num_qubits, num_clbits, ops):
         def __init__(self):
             self.num_qubits = num_qubits
             self.num_clbits = num_clbits
-            self.registers = [Reg("Quantum", num_qubits, "q")]
-            if num_clbits > 0:
-                self.registers.append(Reg("Classical", num_clbits, "c"))
+            self.registers = []
+
+            q_regs = q_registers or ([("q", num_qubits)] if num_qubits > 0 else [])
+            c_regs = c_registers or ([("c", num_clbits)] if num_clbits > 0 else [])
+
+            for name, size in q_regs:
+                self.registers.append(Reg("Quantum", size, name))
+            for name, size in c_regs:
+                self.registers.append(Reg("Classical", size, name))
+
+            def _map_wire(idx, regs, kind):
+                curr = 0
+                for name, size in regs:
+                    if curr <= idx < curr + size:
+                        return W(kind, name, size, idx - curr)
+                    curr += size
+                reg_name = "q" if kind == "Qubit" else "c"
+                return W(kind, reg_name, idx + 1, idx)
+
             self.operations = []
             for o in ops:
                 if o.name == "measure":
-                    wires = (W("Qubit", "q", num_qubits, o.qubits[0]),
-                             W("Clbit", "c", num_clbits, o.cbits[0]))
+                    wires = (
+                        _map_wire(o.qubits[0], q_regs, "Qubit"),
+                        _map_wire(o.cbits[0], c_regs, "Clbit")
+                    )
                 else:
-                    wires = tuple(W("Qubit", "q", num_qubits, q) for q in o.qubits)
+                    wires = tuple(_map_wire(q, q_regs, "Qubit") for q in o.qubits)
                 self.operations.append((G(o.name), wires))
 
     return MockQC()
@@ -258,6 +276,135 @@ class TestQC0303Optimizer(unittest.TestCase):
         u_opt = unitary([Op("x", (0,)), Op("h", (1,))], 2)
         self.assertTrue(equal_up_to_phase(u_orig, u_opt))
         self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    # ---------------------------------- AUDIT DEFECT REGRESSION TESTS
+    def test_equivalence_purely_unitary(self):
+        """DEF-01: Purely unitary circuits report mathematical equivalence verified up to global phase."""
+        ops = [Op("x", (0,)), Op("x", (0,)), Op("h", (0,))]
+        res = optimize(ops)
+        eq = res.report["equivalence"]
+        self.assertEqual(eq["type"], "unitary")
+        self.assertTrue(eq["equivalent"])
+        self.assertTrue(eq["mathematical_equivalence_verified"])
+        self.assertTrue(eq["structural_preservation_verified"])
+        self.assertEqual(res.report["status"], "OK")
+
+    def test_equivalence_terminal_measurement(self):
+        """DEF-01: Terminal measurement circuits verify unitary prefix mathematically and measurements structurally."""
+        ops = [
+            Op("h", (0,)), Op("h", (0,)),
+            Op("x", (0,)),
+            Op("measure", (0,), (0,))
+        ]
+        res = optimize(ops)
+        eq = res.report["equivalence"]
+        self.assertEqual(eq["type"], "terminal_measurement_verified")
+        self.assertTrue(eq["equivalent"])
+        self.assertTrue(eq["mathematical_equivalence_verified"])
+        self.assertTrue(eq["structural_preservation_verified"])
+        self.assertEqual(res.report["status"], "OK")
+
+    def test_equivalence_mid_circuit_measurement(self):
+        """DEF-01: Mid-circuit measurements must return equivalent: None and OK_SEMANTIC_UNVERIFIED."""
+        ops = [
+            Op("h", (0,)),
+            Op("measure", (0,), (0,)),
+            Op("h", (0,))
+        ]
+        res = optimize(ops)
+        eq = res.report["equivalence"]
+        self.assertEqual(eq["type"], "mid_circuit_non_unitary_unverified")
+        self.assertIsNone(eq["equivalent"])
+        self.assertFalse(eq["mathematical_equivalence_verified"])
+        self.assertTrue(eq["structural_preservation_verified"])
+        self.assertEqual(res.report["status"], "OK_SEMANTIC_UNVERIFIED")
+        self.assertTrue(any("Semantic equivalence not verified" in w for w in res.report["warnings"]))
+
+    def test_equivalence_with_reset(self):
+        """DEF-01: Resets prevent unitary simulation; return equivalent: None and OK_SEMANTIC_UNVERIFIED."""
+        ops = [
+            Op("x", (0,)),
+            Op("reset", (0,)),
+            Op("x", (0,))
+        ]
+        res = optimize(ops)
+        eq = res.report["equivalence"]
+        self.assertEqual(eq["type"], "mid_circuit_non_unitary_unverified")
+        self.assertIsNone(eq["equivalent"])
+        self.assertFalse(eq["mathematical_equivalence_verified"])
+        self.assertTrue(eq["structural_preservation_verified"])
+        self.assertEqual(res.report["status"], "OK_SEMANTIC_UNVERIFIED")
+
+    def test_barrier_isolation_and_unitary_equivalence(self):
+        """DEF-01: Barrier blocks cancellation and is preserved without treating barrier as non-unitary quantum op."""
+        ops = [
+            Op("h", (0,)),
+            Op("barrier", (0,)),
+            Op("h", (0,))
+        ]
+        res = optimize(ops)
+        eq = res.report["equivalence"]
+        self.assertEqual(eq["type"], "unitary")
+        self.assertTrue(eq["equivalent"])
+        self.assertTrue(eq["mathematical_equivalence_verified"])
+        self.assertTrue(eq["structural_preservation_verified"])
+        self.assertEqual(res.report["gates_removed"], 0)
+
+    def test_multi_register_preservation(self):
+        """DEF-02: Multi-register circuits preserve names, sizes, and wire mappings in reconstructed circuit."""
+        q_regs = [("data", 2), ("ancilla", 1)]
+        c_regs = [("c_data", 2), ("c_flag", 1)]
+        ops = [
+            Op("h", (0,)),                      # data[0]
+            Op("x", (2,)), Op("x", (2,)),       # ancilla[0] (should cancel)
+            Op("measure", (0,), (0,)),          # data[0] -> c_data[0]
+            Op("measure", (2,), (2,))           # ancilla[0] -> c_flag[0]
+        ]
+        mock_qc = _make_mock_circuit(3, 3, ops, q_registers=q_regs, c_registers=c_regs)
+        res = optimize(mock_qc)
+
+        self.assertEqual(res.report["gates_removed"], 2)
+        new_c = res.circuit
+        # Check registers
+        reg_reprs = [repr(r) for r in new_c.registers]
+        self.assertIn("QuantumRegister(2, 'data')", reg_reprs)
+        self.assertIn("QuantumRegister(1, 'ancilla')", reg_reprs)
+        self.assertIn("ClassicalRegister(2, 'c_data')", reg_reprs)
+        self.assertIn("ClassicalRegister(1, 'c_flag')", reg_reprs)
+
+        # Re-extract with from_qniverse to verify wire decoding
+        extracted_ops, nq, nc, _ = qa.from_qniverse(new_c)
+        self.assertEqual(nq, 3)
+        self.assertEqual(nc, 3)
+        self.assertEqual(len(extracted_ops), 3) # H(0), measure(0->0), measure(2->2)
+        self.assertEqual(extracted_ops[0], Op("h", (0,)))
+        self.assertEqual(extracted_ops[1], Op("measure", (0,), (0,)))
+        self.assertEqual(extracted_ops[2], Op("measure", (2,), (2,)))
+
+    def test_mismatched_verification_detected(self):
+        """DEF-01: Non-equivalent circuits or mutated measurements are detected as equivalent: False."""
+        # 1. Purely unitary mismatch
+        res1 = verify_equivalence([Op("x", (0,))], [Op("z", (0,))], 1)
+        self.assertFalse(res1["equivalent"])
+        self.assertFalse(res1["mathematical_equivalence_verified"])
+
+        # 2. Terminal measurement mismatch: prefix different
+        res2 = verify_equivalence(
+            [Op("x", (0,)), Op("measure", (0,), (0,))],
+            [Op("z", (0,)), Op("measure", (0,), (0,))],
+            1
+        )
+        self.assertFalse(res2["equivalent"])
+        self.assertFalse(res2["mathematical_equivalence_verified"])
+
+        # 3. Terminal measurement mismatch: classical bit destination changed
+        res3 = verify_equivalence(
+            [Op("x", (0,)), Op("measure", (0,), (0,))],
+            [Op("x", (0,)), Op("measure", (0,), (1,))],
+            1
+        )
+        self.assertFalse(res3["equivalent"])
+        self.assertFalse(res3["structural_preservation_verified"])
 
 
 if __name__ == "__main__":
