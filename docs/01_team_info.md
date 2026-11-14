@@ -22,7 +22,7 @@ Together, these three problem statements form an integrated, end-to-end **Quantu
 | **Dhruti** | `dhruti218` | Documentation & Compliance Lead | Architecture documentation, AI usage compliance, test validation, Git workflow hygiene, report drafting. |
 | **Shiva Mahapatra** | `Shivamahapatra` | Lead Developer (Coding) | Core QSDK integration, QASM parsing engine, circuit synthesis, repository administration. |
 | **Advik Singla** | `adviksingla` | Core Developer (Coding) | Circuit optimization passes, rewrite rule engine, basis-gate decomposition algorithms, unit testing. |
-| **Saumitra Gupta** | `saumitraguptafr` | Presenter & Evaluation Lead | Viva presentation, demonstration script, problem validation against hackathon requirements, judge walkthrough. |
+| **Saumitra Gupta** | `saumitraguptafr` | Presenter & Evaluation Lead | Technical presentation, demonstration script, problem validation against hackathon requirements, evaluation walkthrough. |
 
 ---
 
@@ -45,6 +45,6 @@ Together, these three problem statements form an integrated, end-to-end **Quantu
 - Develop unit tests and verify physical non-mutating guarantees.
 
 ### 4. Saumitra Gupta (Presenter & Demonstration Lead)
-- Formulate the viva presentation narrative and technical slide deck/walkthrough.
+- Formulate the project presentation narrative and technical demonstration walkthrough.
 - Design live demonstration scripts proving input-output correctness across all three problem statements.
 - Coordinate with judges during evaluations, explaining algorithmic tradeoffs and Qniverse platform integration.
