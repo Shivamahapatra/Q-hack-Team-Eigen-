@@ -1,61 +1,97 @@
 # Technical Approach: QC-C1-01 (Circuit Profiling & Limited Basis-Gate Decomposition)
 
-## 1. Problem Overview (In Simple Words)
+## 1. Problem Overview
 
-In quantum computing, real quantum hardware cannot run every type of gate directly. Each quantum processor only supports a small collection of native gates, called its **basis gate set** (for example: `{rx, ry, rz, cx}`).
+In quantum compilation, target quantum processing units (QPUs) cannot execute arbitrary high-level gates directly. Hardware backends only support a calibrated native **basis gate set** (such as $\{cx, h\}$ or Clifford+T $\{h, t, t^\dagger, cx\}$).
 
-**Our Goal for QC-C1-01**:
-Build a tool for C-DAC's **Qniverse / QSDK** platform that does two things:
-1. **Circuit Profiler**: Takes a quantum circuit and calculates its vital stats (how many qubits it uses, how many gates it has, and how deep/long it is).
-2. **Basis Decomposer**: Takes a user-selected list of allowed gates (the basis set) and breaks down any non-basis gates into equivalent supported gates, returning a fresh new circuit without touching the original.
-
----
-
-## 2. Part 1: Circuit Profiler (Resource Counter)
-
-The profiler inspects the circuit and outputs a clear report with the following metrics:
-
-### The Metrics We Report:
-- **Qubits Declared vs Used**: Total qubits allocated in the circuit vs how many actually have gates applied.
-- **Total Gate Count**: Sum of all quantum operations.
-- **Gate Breakdown**: Exact count of each gate type (e.g., 4 Hadamards, 2 CNOTs, 1 Rz).
-- **Single-Qubit vs Multi-Qubit Gates**: Separate counts for 1-qubit operations and entangling multi-qubit gates (like CX/CNOT, CZ, SWAP).
-- **Two-Qubit Gate Count**: Specifically counts 2-qubit interactions (the most error-prone operations on real hardware).
-- **Circuit Depth**: The number of parallel time steps the circuit takes to run from start to finish.
-
-### How Circuit Depth is Calculated (Earliest-Layer Rule)
-Think of depth as time moving from left to right:
-- **Disjoint Qubits run in Parallel**: If a gate runs on Qubit 0 and another gate runs on Qubit 1 at the same time, they share the same layer (Depth = 1).
-- **Shared Qubits must Wait**: If two gates act on the same Qubit 0, the second gate must wait for the first to finish (Depth = 2).
-- **Multi-Qubit Gates sync wires**: A CNOT on Qubit 0 and Qubit 1 occupies a layer across both qubits. Both qubits advance to that new layer together.
-- **Total Depth**: The layer number reached by the slowest qubit wire.
+**QC-C1-01 Core Objectives**:
+1. **Circuit Profiling**: Calculate rigorous circuit statistics (total gates, 1-qubit vs multi-qubit gates, 2-qubit count, and circuit depth via an earliest-available-layer schedule).
+2. **Limited Basis-Gate Decomposition**: Translate any non-basis gates into equivalent sequences of target basis gates using recursive rule substitution, while ensuring the original circuit is completely untouched (immutability).
+3. **Qniverse QSDK Compatibility**: Support native `QniverseCircuit` ingestion and emission with fallback OpenQASM 2.0 parsing.
 
 ---
 
-## 3. Part 2: Limited Basis-Gate Decomposition
+## 2. Architecture & Data Flow
 
-The user provides a target basis set (e.g., `['rx', 'ry', 'rz', 'cx']` or `['h', 't', 'cx']`).
-
-For every gate in the circuit:
-1. **Already in Basis?**  
-   If the gate is already in the target set, keep it as-is.
-2. **Supported for Decomposition?**  
-   If the gate is not in the basis, replace it with equivalent gates from the allowed set.
-   - Example 1: Replace an `X` gate with a rotation: `Rx(pi)`.
-   - Example 2: Replace an `H` (Hadamard) gate with rotation gates: `Rz(pi/2) -> Rx(pi/2) -> Rz(pi/2)`.
-   - Example 3: Replace a `SWAP` gate between two qubits with 3 CNOT gates: `CX -> CX -> CX`.
-3. **Unsupported Gate?**  
-   If a gate cannot be converted into the requested basis, the tool **stops and reports an explicit error**. It will never secretly produce a broken or inaccurate circuit.
+```
++-------------------------------------------------------------+
+|              Input: QniverseCircuit / QASM 2.0              |
++-------------------------------------------------------------+
+                              |
+                              v  (from_qniverse / parse_qasm)
++-------------------------------------------------------------+
+|               Internal Op Representation (Tuple)            |
+|            Op(name="h", qubits=(0,), cbits=())              |
++-------------------------------------------------------------+
+          |                                       |
+          v                                       v
++------------------------+             +----------------------+
+|    profile(ops, n)     |             | decompose(ops, basis)|
+|  - Earliest Layer DAG  |             |  - Recursive Rule    |
+|  - Barrier Sync        |             |  - Cycle Detection   |
+|  - Gate Counts         |             |  - Error on Unsup.   |
++------------------------+             +----------------------+
+          |                                       |
+          v                                       v
+    Before Profile                            Decomposed Ops
+                                                  |
+                                                  v  (to_qniverse)
+                                       +----------------------+
+                                       | New QniverseCircuit  |
+                                       | (Input Unmodified)   |
+                                       +----------------------+
+```
 
 ---
 
-## 4. Key Rules and Guarantees (For Viva Evaluation)
+## 3. Core Algorithms
 
-When explaining this solution to the judges, highlight these three guarantees:
+### 3.1 Earliest-Available-Layer Depth Scheduler (`profile`)
+Circuit depth represents the runtime duration of the circuit assuming gates execute as soon as their operand qubits are free.
 
-1. **Non-Mutating (Safe Input)**:  
-   The original input circuit is never modified. The decomposer always returns a brand new `QniverseCircuit` object.
-2. **Preserves Non-Unitary Operations**:  
-   Measurements, resets, and barriers are copied over in their exact positions and order—never dropped or reordered.
-3. **Before-and-After Comparison**:  
-   The tool generates a structured profile report comparing metrics **before** decomposition vs **after** decomposition so users can see how gate counts and depth expanded to fit the hardware.
+1. **Free-Layer Tracking**: Maintain an array `free = [0] * num_qubits`, representing the next available layer for each wire.
+2. **Gate Scheduling**: For an operation acting on qubits $Q$:
+   $$\text{start} = \max_{q \in Q} \text{free}[q]$$
+   $$\forall q \in Q: \quad \text{free}[q] \leftarrow \text{start} + 1$$
+   $$\text{depth} \leftarrow \max(\text{depth}, \text{start} + 1)$$
+3. **Barrier Synchronization**:
+   A `barrier` consumes **0 layers** of execution time, but acts as a synchronization fence:
+   $$\text{start} = \max_{q \in Q} \text{free}[q]$$
+   $$\forall q \in Q: \quad \text{free}[q] \leftarrow \text{start}$$
+   Operations following the barrier on any spanned wire cannot slide backward ahead of gates preceding the barrier.
+
+---
+
+### 3.2 Recursive Basis Decomposition (`decompose` & `_expand`)
+The decomposition engine translates arbitrary gates into a user-specified target basis $\mathcal{B}$:
+
+1. **Base Case**: If an operation's name is already in $\mathcal{B}$ or belongs to `NON_UNITARY` (`measure`, `reset`, `barrier`), it is retained as-is.
+2. **Rule Tree Lookup**: High-level gates are mapped through local decomposition rules:
+   - $X = H \cdot Z \cdot H$
+   - $Y = S^\dagger \cdot X \cdot S$
+   - $Z = H \cdot X \cdot H$ (with alternative $Z = S \cdot S$)
+   - $CZ(q_0, q_1) = H(q_1) \cdot CX(q_0, q_1) \cdot H(q_1)$
+   - $SWAP(q_0, q_1) = CX(q_0, q_1) \cdot CX(q_1, q_0) \cdot CX(q_0, q_1)$
+   - $S = T \cdot T, \quad S^\dagger = T^\dagger \cdot T^\dagger$
+   - $CCX$ (Toffoli): 15-gate Clifford+T decomposition.
+3. **Cycle Prevention**: A recursion stack `stack` tracks active expansions. If a cyclic dependency occurs (e.g. $X \leftrightarrow Z$), the engine prunes the branch and falls back to alternative rules (`ALT_RULES`).
+4. **Unsupported Gate Handling**: If a gate cannot be expanded into the basis $\mathcal{B}$, decomposition halts and emits:
+   ```json
+   { "status": "FAILED: unsupported operations, no circuit emitted", "unsupported": [...] }
+   ```
+   No invalid or partially decomposed circuit is ever emitted.
+
+---
+
+### 3.3 Unitary Equivalence Verification (`unitary` & `equal_up_to_phase`)
+To mathematically prove correctness without depending on external simulators:
+1. Matrix representations are generated on $2^n$-dimensional Hilbert space using binary column decomposition.
+2. Equivalence between the original circuit $U$ and decomposed circuit $V$ is evaluated up to global phase $e^{i\phi}$:
+   $$\exists \phi \in \mathbb{R} \quad \text{such that} \quad U = e^{i\phi} V \iff \frac{U_{ij}}{V_{ij}} \cdot V \approx U$$
+
+---
+
+### 3.4 Qniverse QSDK Integration (`from_qniverse` & `to_qniverse`)
+- **Ingestion**: Accepts native `QniverseCircuit` objects, inspecting `.qasm()`, `.gates`, or raw OpenQASM 2.0 text.
+- **Emission**: Rebuilds a fresh `QniverseCircuit` using documented QSDK modules (`qniverse.circuit.QniverseCircuit`, `qniverse.registers.QuantumRegister`, `qniverse.registers.ClassicalRegister`, `qniverse.gates.*`).
+- **Offline Fallback**: If the Qniverse environment container is not present, emits a standard `MockQniverseCircuit` conforming to the identical API and QASM export contract.
