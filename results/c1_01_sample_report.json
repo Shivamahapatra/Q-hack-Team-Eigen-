@@ -1,44 +1,36 @@
 {
   "basis": [
     "cx",
-    "h",
-    "s",
-    "sdg",
-    "t",
-    "tdg"
+    "h"
   ],
   "before": {
-    "total_gates": 4,
+    "total_gates": 2,
     "by_type": {
       "h": 1,
-      "swap": 1,
-      "cz": 1,
-      "y": 1
+      "swap": 1
     },
-    "qubits_declared": 3,
-    "qubits_used": 3,
-    "single_qubit_gates": 2,
-    "multi_qubit_gates": 2,
-    "two_qubit_gates": 2,
-    "depth": 4,
-    "measurements": 2
+    "qubits_declared": 2,
+    "qubits_used": 2,
+    "single_qubit_gates": 1,
+    "multi_qubit_gates": 1,
+    "two_qubit_gates": 1,
+    "depth": 3,
+    "measurements": 1
   },
   "unsupported": [],
   "after": {
-    "total_gates": 13,
+    "total_gates": 4,
     "by_type": {
-      "h": 5,
-      "cx": 4,
-      "sdg": 1,
-      "s": 3
+      "h": 1,
+      "cx": 3
     },
-    "qubits_declared": 3,
-    "qubits_used": 3,
-    "single_qubit_gates": 9,
-    "multi_qubit_gates": 4,
-    "two_qubit_gates": 4,
-    "depth": 11,
-    "measurements": 2
+    "qubits_declared": 2,
+    "qubits_used": 2,
+    "single_qubit_gates": 1,
+    "multi_qubit_gates": 3,
+    "two_qubit_gates": 3,
+    "depth": 5,
+    "measurements": 1
   },
   "status": "OK"
 }

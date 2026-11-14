@@ -1,6 +1,6 @@
 """
 Demonstration script for QC-C1-01:
-Profiles and decomposes a sample circuit with basis gates {h, cx, t, tdg}.
+Profiles and decomposes a sample circuit into basis set {'h', 'cx'}.
 Saves report to results/c1_01_sample_report.json.
 """
 import json
@@ -16,17 +16,13 @@ from c1_01_profiler import analyze
 def run_demo():
     sample_qasm = """OPENQASM 2.0;
 include "qelib1.inc";
-qreg q[3];
-creg c[2];
+qreg q[2];
+creg c[1];
 h q[0];
 swap q[0], q[1];
-cz q[1], q[2];
-y q[0];
-barrier q[0], q[1], q[2];
 measure q[0] -> c[0];
-measure q[1] -> c[1];
 """
-    basis_set = {"h", "cx", "t", "tdg", "s", "sdg"}
+    basis_set = {"h", "cx"}
 
     print("=" * 60)
     print("QC-C1-01: Quantum Circuit Profiling & Decomposition Demo")
