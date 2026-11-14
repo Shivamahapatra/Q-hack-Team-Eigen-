@@ -28,8 +28,49 @@ The earliest-available-layer DAG scheduler was verified across three canonical c
 
 - **Input Circuit**: `[H(0), SWAP(0, 1), Measure(0)]`
 - **Target Hardware Basis**: `['cx', 'h']`
+- **Generated Report File**: [`results/qc_c1_01_profile_report.json`](../results/qc_c1_01_profile_report.json)
 
-| Metric | Before Decomposition | After Decomposition | Delta |
+#### Exact Execution JSON Report:
+```json
+{
+  "basis": [
+    "cx",
+    "h"
+  ],
+  "before": {
+    "total_gates": 2,
+    "by_type": {
+      "h": 1,
+      "swap": 1
+    },
+    "qubits_declared": 2,
+    "qubits_used": 2,
+    "single_qubit_gates": 1,
+    "multi_qubit_gates": 1,
+    "two_qubit_gates": 1,
+    "depth": 3,
+    "measurements": 1
+  },
+  "unsupported": [],
+  "after": {
+    "total_gates": 4,
+    "by_type": {
+      "h": 1,
+      "cx": 3
+    },
+    "qubits_declared": 2,
+    "qubits_used": 2,
+    "single_qubit_gates": 1,
+    "multi_qubit_gates": 3,
+    "two_qubit_gates": 3,
+    "depth": 5,
+    "measurements": 1
+  },
+  "status": "OK"
+}
+```
+
+#### Metrics Analysis Table:
 | :--- | :--- | :--- | :--- |
 | **Total Gate Count** | 2 | 4 | +2 gates (+100%) |
 | **Gate Breakdown** | `h`: 1, `swap`: 1 | `h`: 1, `cx`: 3 | Replaced 1 SWAP with 3 CX |
