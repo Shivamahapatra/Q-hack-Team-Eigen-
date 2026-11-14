@@ -11,4 +11,5 @@
 | 2026-11-14 | Technical Approach Architecture & Specification (Dhruti) | Antigravity | Gemini 3.8 Flash | Authored docs/02_technical_approach.md covering the integrated compilation pipeline, DAG scheduler formulas, optimization rules, and decomposition math |
 | 2026-11-14 | Technical Approach Simplification & Viva Refinement (Dhruti) | Antigravity | Gemini 3.8 Flash | Rewrote docs/02_technical_approach.md into clear, accessible plain-language format with concrete before/after examples for viva defense |
 | 2026-11-14 | Technical Approach Scope Focus to QC-C1-01 (Dhruti) | Antigravity | Gemini 3.8 Flash | Scoped docs/02_technical_approach.md strictly to QC-C1-01: circuit profiling, earliest-layer depth scheduler, and basis decomposition rules |
+| 2026-11-14 | QC-C1-01 Profiler Integration & Verification (Dhruti) | Antigravity | Gemini 3.8 Flash | Integrated src/profiler.py from team specification, executed test circuit, and verified earliest-layer circuit depth scheduling |
 
