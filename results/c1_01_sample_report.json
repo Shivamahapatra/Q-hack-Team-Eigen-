@@ -1,0 +1,44 @@
+{
+  "basis": [
+    "cx",
+    "h",
+    "s",
+    "sdg",
+    "t",
+    "tdg"
+  ],
+  "before": {
+    "total_gates": 4,
+    "by_type": {
+      "h": 1,
+      "swap": 1,
+      "cz": 1,
+      "y": 1
+    },
+    "qubits_declared": 3,
+    "qubits_used": 3,
+    "single_qubit_gates": 2,
+    "multi_qubit_gates": 2,
+    "two_qubit_gates": 2,
+    "depth": 4,
+    "measurements": 2
+  },
+  "unsupported": [],
+  "after": {
+    "total_gates": 13,
+    "by_type": {
+      "h": 5,
+      "cx": 4,
+      "sdg": 1,
+      "s": 3
+    },
+    "qubits_declared": 3,
+    "qubits_used": 3,
+    "single_qubit_gates": 9,
+    "multi_qubit_gates": 4,
+    "two_qubit_gates": 4,
+    "depth": 11,
+    "measurements": 2
+  },
+  "status": "OK"
+}
