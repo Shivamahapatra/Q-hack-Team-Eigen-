@@ -37,6 +37,7 @@ from .optimizer import (
     PASS_CSWAP_CANCELLATION,
     PASS_S_SDG_CANCELLATION,
     PASS_T_TDG_CANCELLATION,
+    _decompose_wide_barrier,
 )
 
 __all__ = [
@@ -60,4 +61,5 @@ __all__ = [
     "PASS_CSWAP_CANCELLATION",
     "PASS_S_SDG_CANCELLATION",
     "PASS_T_TDG_CANCELLATION",
+    "_decompose_wide_barrier",
 ]

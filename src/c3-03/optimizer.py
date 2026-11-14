@@ -456,6 +456,27 @@ def _run_optimization_pipeline(ops: List[Op], passes: List[str]) -> Tuple[List[O
     return current_ops, sorted(passes_applied)
 
 
+def _decompose_wide_barrier(qubits: Tuple[int, ...]) -> List[Tuple[int, ...]]:
+    """
+    Decomposes a barrier spanning >2 qubits into a chain of 2-qubit barriers
+    forward (a,b), (b,c), ... and backward back to (a,b) to ensure full synchronization
+    across all qubits without exceeding Qniverse's 2-qubit barrier limit.
+    Single-qubit and two-qubit barriers are returned as-is.
+    """
+    if len(qubits) <= 2:
+        return [qubits]
+
+    pairs = []
+    n = len(qubits)
+    # Forward pairs: (q_0, q_1), (q_1, q_2), ..., (q_{n-2}, q_{n-1})
+    for i in range(n - 1):
+        pairs.append((qubits[i], qubits[i + 1]))
+    # Backward pairs back to (q_0, q_1): (q_{n-3}, q_{n-2}), ..., (q_0, q_1)
+    for i in range(n - 3, -1, -1):
+        pairs.append((qubits[i], qubits[i + 1]))
+    return pairs
+
+
 def _reconstruct_circuit(
     ops: List[Op],
     num_qubits: int,
@@ -531,7 +552,11 @@ def _reconstruct_circuit(
                     gate_fn = getattr(live_G, "barrier", None)
                     if not gate_fn:
                         raise ValueError("Cannot reconstruct circuit: 'barrier' not supported in Qniverse gates")
-                    new_qc.add_gate(gate_fn, *[q_map[q] for q in o.qubits])
+                    if len(o.qubits) <= 2:
+                        new_qc.add_gate(gate_fn, *[q_map[q] for q in o.qubits])
+                    else:
+                        for pair in _decompose_wide_barrier(o.qubits):
+                            new_qc.add_gate(gate_fn, *[q_map[q] for q in pair])
                 elif o.name == "reset":
                     gate_fn = getattr(live_G, "reset", None)
                     if not gate_fn:
@@ -543,18 +568,25 @@ def _reconstruct_circuit(
                         raise ValueError(f"Cannot reconstruct circuit: gate '{o.name}' not supported in Qniverse gates")
                     new_qc.add_gate(gate_fn, *[q_map[q] for q in o.qubits])
 
-            if len(new_qc.operations) != len(ops):
+            expected_qc_ops = sum(
+                len(_decompose_wide_barrier(o.qubits)) if o.name == "barrier" and len(o.qubits) > 2 else 1
+                for o in ops
+            )
+            if len(new_qc.operations) != expected_qc_ops:
                 raise RuntimeError(
-                    f"Reconstructed circuit operation count mismatch: expected {len(ops)}, got {len(new_qc.operations)}"
+                    f"Reconstructed circuit operation count mismatch: expected {expected_qc_ops}, got {len(new_qc.operations)}"
                 )
 
             if metadata:
                 new_qc.metadata = copy.deepcopy(metadata)
             return new_qc
         except Exception as e:
-            print(f"Warning: Live Qniverse SDK reconstruction failed ({e}). Falling back to mock backend.")
+            fallback_reason = str(e)
+            print(f"Warning: Real SDK rejected operation during rebuild: {e}. Using fallback in-memory mock backend.")
+    else:
+        fallback_reason = "Qniverse SDK not installed (qniverse package missing)"
+        print("Warning: Real Qniverse SDK not found (qniverse package missing). Using fallback in-memory mock backend.")
 
-    print("Warning: Real Qniverse SDK not found (qniverse package missing). Using fallback in-memory mock backend.")
     # Offline representation conforming strictly to Qniverse runtime structure
     class _MockReg:
         def __init__(self, kind: str, size: int, name: str):
@@ -610,6 +642,7 @@ def _reconstruct_circuit(
             meta: Optional[Dict[str, Any]]
         ):
             self._backend = "fallback"
+            self._fallback_reason = None
             self.num_qubits = n_q
             self.num_clbits = n_c
             self.registers = []
@@ -660,7 +693,10 @@ def _reconstruct_circuit(
                     lines.append(f"{gname} {args};")
             return "\n".join(lines) + "\n"
 
-    return _MockQniverseCircuit(num_qubits, num_clbits, ops, q_layout, c_layout, metadata)
+    mock_qc = _MockQniverseCircuit(num_qubits, num_clbits, ops, q_layout, c_layout, metadata)
+    mock_qc._backend = "fallback"
+    mock_qc._fallback_reason = fallback_reason
+    return mock_qc
 
 
 def verify_equivalence(
@@ -882,9 +918,11 @@ def optimize(
         skip_msg = "optimization skipped: conditional gates present"
         warnings.append(skip_msg)
         backend = getattr(qc, "_backend", "fallback")
+        fallback_reason = getattr(qc, "_fallback_reason", None)
         report = {
             "status": skip_msg,
             "backend": backend,
+            "fallback_reason": fallback_reason,
             "passes_enabled": selected_passes,
             "passes_applied": [],
             "before": None,
@@ -999,12 +1037,14 @@ def optimize(
     )
 
     backend = getattr(new_circuit, "_backend", "fallback")
+    fallback_reason = getattr(new_circuit, "_fallback_reason", None)
     if backend == "fallback":
-        warnings.append("Qniverse SDK not installed; executed on fallback in-memory mock backend.")
+        warnings.append(f"Backend fallback: {fallback_reason}")
 
     report = {
         "status": status,
         "backend": backend,
+        "fallback_reason": fallback_reason,
         "passes_enabled": selected_passes,
         "passes_applied": passes_applied,
         "before": metrics_before,

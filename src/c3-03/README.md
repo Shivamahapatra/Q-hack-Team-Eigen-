@@ -139,6 +139,8 @@ result = optimize(
 ---
 
 ## 5. Safety & Register Preservation
+- **Wide Barrier Decomposition for Qniverse**: Qniverse SDK hardware rejects barriers spanning $>2$ qubits (`"Gate 'BARRIER' requires 1 or 2 qubits, but got 3"`). When reconstructing circuits on the live SDK, wide barriers are automatically decomposed into forward-then-backward pairs of 2-qubit barriers: `(q_0, q_1), (q_1, q_2), ..., (q_{n-2}, q_{n-1})` then `(q_{n-3}, q_{n-2}), ..., (q_0, q_1)`. This guarantees transitive synchronization across all wires without exceeding SDK qubit limits, preserving circuit depth.
+- **Backend & Fallback Transparency**: The optimization report explicitly identifies `"backend": "qniverse"` when running on the live QSDK, or `"backend": "fallback"` when using the in-memory mock. If the live SDK rejects any operation during rebuild, the exact SDK error is printed and captured in `report["fallback_reason"]`.
 - **Zero Operation Dropping (DEF-03)**: Every input operation must be reconstructed successfully or raise an explicit `ValueError`. Reconstructed operation counts and sequence ordering are strictly validated.
 - **Fail-Fast Parameterized Gate Rejection (DEF-04)**: Circuits with continuous parameterized rotation gates (`rx`, `ry`, `rz`, `p`, `u1`, `u2`, `u3`, `crx`, etc.) are explicitly rejected before optimization to guarantee parameters are never silently discarded.
 - **Rigorous Boundary Preservation (DEF-05, DEF-06)**: Unitary operations are strictly validated never to cross non-unitary delimiters (`measure`, `reset`, `barrier`). Missing, moved, or reordered barriers or measurements immediately fail structural verification.

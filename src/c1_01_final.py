@@ -350,6 +350,23 @@ def from_qniverse(qc):
     )
 
 
+def _decompose_wide_barrier(qubits):
+    """
+    Decomposes a barrier spanning >2 qubits into a chain of 2-qubit barriers
+    forward (a,b), (b,c), ... and backward back to (a,b) to ensure full synchronization
+    across all qubits without exceeding Qniverse's 2-qubit barrier limit.
+    """
+    if len(qubits) <= 2:
+        return [qubits]
+    pairs = []
+    n = len(qubits)
+    for i in range(n - 1):
+        pairs.append((qubits[i], qubits[i + 1]))
+    for i in range(n - 3, -1, -1):
+        pairs.append((qubits[i], qubits[i + 1]))
+    return pairs
+
+
 def to_qniverse(ops, num_qubits):
     """
     Builds a new QniverseCircuit from the Op list, preserving qubit indices
@@ -409,7 +426,11 @@ def to_qniverse(ops, num_qubits):
         elif o.name == "barrier":
             gate_fn = getattr(qg, "barrier", None)
             if gate_fn:
-                qc.add_gate(gate_fn, *(q[idx] for idx in o.qubits))
+                if len(o.qubits) <= 2:
+                    qc.add_gate(gate_fn, *(q[idx] for idx in o.qubits))
+                else:
+                    for pair in _decompose_wide_barrier(o.qubits):
+                        qc.add_gate(gate_fn, *(q[idx] for idx in pair))
         elif o.name == "reset":
             gate_fn = getattr(qg, "reset", None)
             if gate_fn:

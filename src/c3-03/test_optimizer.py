@@ -19,7 +19,7 @@ for _p in _candidates:
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.insert(0, _p)
 
-from c1_01_final import Op, unitary, equal_up_to_phase
+from c1_01_final import Op, unitary, equal_up_to_phase, profile
 import qniverse_adapter as qa
 from optimizer import (
     optimize,
@@ -45,6 +45,7 @@ from optimizer import (
     _validate_register_layouts,
     _validate_circuit_ops,
     _verify_structural_placement,
+    _decompose_wide_barrier,
 )
 
 
@@ -296,6 +297,7 @@ class TestQC0303Optimizer(unittest.TestCase):
         res = optimize(ops)
         self.assertIn("backend", res.report)
         self.assertEqual(res.report["backend"], "fallback")
+        self.assertEqual(res.report["fallback_reason"], "Qniverse SDK not installed (qniverse package missing)")
         self.assertTrue(any("fallback" in w.lower() for w in res.report["warnings"]))
 
     def test_priority2_backend_qniverse_reported_when_live(self):
@@ -482,6 +484,173 @@ class TestQC0303Optimizer(unittest.TestCase):
         self.assertEqual(res.report["gates_removed"], 10)
         self.assertEqual(res.report["after"]["total_gates"], 0)
         self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    # --------------------------------------------- WIDE BARRIER & REBUILD HANDLING TESTS
+    def test_decompose_wide_barrier_structure(self):
+        """Wide barrier decomposition creates forward and backward 2-qubit chains."""
+        # 1-qubit and 2-qubit barriers remain unchanged
+        self.assertEqual(_decompose_wide_barrier((0,)), [(0,)])
+        self.assertEqual(_decompose_wide_barrier((0, 1)), [(0, 1)])
+
+        # 3-qubit barrier: forward (0,1), (1,2) and backward (0,1)
+        self.assertEqual(
+            _decompose_wide_barrier((0, 1, 2)),
+            [(0, 1), (1, 2), (0, 1)]
+        )
+
+        # 4-qubit barrier: forward (0,1), (1,2), (2,3) and backward (1,2), (0,1)
+        self.assertEqual(
+            _decompose_wide_barrier((0, 1, 2, 3)),
+            [(0, 1), (1, 2), (2, 3), (1, 2), (0, 1)]
+        )
+
+    def test_wide_barrier_rebuild_on_real_sdk_emits_at_most_2_qubits(self):
+        """Real SDK finding: Rebuild decomposes wide barriers into <=2 qubit gates without fallback."""
+        import types
+        from unittest.mock import patch
+
+        mock_gates_mod = types.ModuleType("qniverse.gates")
+        class FakeBarrier:
+            pass
+        class FakeH:
+            pass
+        mock_gates_mod.barrier = FakeBarrier()
+        mock_gates_mod.h = FakeH()
+
+        barrier_calls = []
+
+        mock_qc_mod = types.ModuleType("qniverse.QniverseCircuit")
+        class FakeQC:
+            def __init__(self):
+                self.operations = []
+                self.registers = []
+            def add_register(self, reg):
+                self.registers.append(reg)
+            def add_gate(self, gate, *qubits):
+                if gate is mock_gates_mod.barrier:
+                    if len(qubits) > 2:
+                        raise ValueError(f"Gate 'BARRIER' requires 1 or 2 qubits, but got {len(qubits)}")
+                    barrier_calls.append(tuple(q[1] for q in qubits))
+                self.operations.append((gate, qubits))
+
+        class FakeReg:
+            def __init__(self, size, name):
+                self.size = size
+                self.name = name
+            def __getitem__(self, idx):
+                return (self.name, idx)
+        mock_qc_mod.QniverseCircuit = FakeQC
+        mock_qc_mod.QuantumRegister = FakeReg
+        mock_qc_mod.ClassicalRegister = FakeReg
+
+        with patch.dict(sys.modules, {
+            "qniverse": types.ModuleType("qniverse"),
+            "qniverse.gates": mock_gates_mod,
+            "qniverse.QniverseCircuit": mock_qc_mod
+        }):
+            ops = [Op("h", (0,)), Op("barrier", (0, 1, 2)), Op("h", (2,))]
+            res = optimize(ops)
+            # Must successfully rebuild on qniverse backend without falling back
+            self.assertEqual(res.report["backend"], "qniverse")
+            self.assertIsNone(res.report["fallback_reason"])
+            # Verified that barrier was emitted as (0,1), (1,2), (0,1)
+            self.assertEqual(barrier_calls, [(0, 1), (1, 2), (0, 1)])
+            # All barrier calls had at most 2 qubits
+            self.assertTrue(all(len(c) <= 2 for c in barrier_calls))
+
+    def test_profiler_depth_identical_for_wide_barrier_and_chain(self):
+        """Profiler depth rule gives identical depth for wide barrier and rebuilt chain."""
+        # Scenario 1: 3-qubit barrier with gates on different qubits
+        ops_wide1 = [Op("h", (0,)), Op("x", (1,)), Op("barrier", (0, 1, 2)), Op("z", (2,))]
+        ops_chain1 = [
+            Op("h", (0,)), Op("x", (1,)),
+            Op("barrier", (0, 1)), Op("barrier", (1, 2)), Op("barrier", (0, 1)),
+            Op("z", (2,))
+        ]
+        p_wide1 = profile(ops_wide1, 3)
+        p_chain1 = profile(ops_chain1, 3)
+        self.assertEqual(p_wide1["depth"], p_chain1["depth"])
+        self.assertEqual(p_wide1["depth"], 2)
+
+        # Scenario 2: 4-qubit barrier with staggered initial depths
+        ops_wide2 = [
+            Op("h", (0,)), Op("x", (0,)), Op("y", (2,)),
+            Op("barrier", (0, 1, 2, 3)),
+            Op("h", (3,))
+        ]
+        ops_chain2 = [
+            Op("h", (0,)), Op("x", (0,)), Op("y", (2,)),
+            Op("barrier", (0, 1)), Op("barrier", (1, 2)), Op("barrier", (2, 3)),
+            Op("barrier", (1, 2)), Op("barrier", (0, 1)),
+            Op("h", (3,))
+        ]
+        p_wide2 = profile(ops_wide2, 4)
+        p_chain2 = profile(ops_chain2, 4)
+        self.assertEqual(p_wide2["depth"], p_chain2["depth"])
+        self.assertEqual(p_wide2["depth"], 3)
+
+    def test_wide_barrier_blocks_cancellation_h0(self):
+        """Wide barrier (0,1,2) blocks H(0) - H(0) cancellation across it."""
+        ops = [Op("h", (0,)), Op("barrier", (0, 1, 2)), Op("h", (0,))]
+        res = optimize(ops)
+        self.assertEqual(res.report["gates_removed"], 0)
+        self.assertEqual(res.report["after"]["total_gates"], 2)
+
+    def test_wide_barrier_blocks_cancellation_x2(self):
+        """Wide barrier (0,1,2) blocks X(2) - X(2) cancellation across it."""
+        ops = [Op("x", (2,)), Op("barrier", (0, 1, 2)), Op("x", (2,))]
+        res = optimize(ops)
+        self.assertEqual(res.report["gates_removed"], 0)
+        self.assertEqual(res.report["after"]["total_gates"], 2)
+
+    def test_disjoint_barrier_allows_cancellation_x2(self):
+        """Barrier on (0,1) does NOT touch qubit 2; X(2) - X(2) cancels."""
+        ops = [Op("x", (2,)), Op("barrier", (0, 1)), Op("x", (2,))]
+        res = optimize(ops)
+        self.assertEqual(res.report["gates_removed"], 2)
+        self.assertEqual(res.report["after"]["total_gates"], 0)
+        self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    def test_real_sdk_rejection_reports_fallback_reason(self):
+        """When real SDK rejects an operation during rebuild, report sets backend=fallback and fallback_reason."""
+        import types
+        from unittest.mock import patch
+
+        mock_gates_mod = types.ModuleType("qniverse.gates")
+        class FakeGate:
+            pass
+        mock_gates_mod.h = FakeGate()
+
+        mock_qc_mod = types.ModuleType("qniverse.QniverseCircuit")
+        class FakeQC:
+            def __init__(self):
+                self.operations = []
+                self.registers = []
+            def add_register(self, reg):
+                self.registers.append(reg)
+            def add_gate(self, gate, *qubits):
+                raise RuntimeError("Simulated Qniverse hardware constraint: gate rejected")
+
+        class FakeReg:
+            def __init__(self, size, name):
+                self.size = size
+                self.name = name
+            def __getitem__(self, idx):
+                return (self.name, idx)
+        mock_qc_mod.QniverseCircuit = FakeQC
+        mock_qc_mod.QuantumRegister = FakeReg
+        mock_qc_mod.ClassicalRegister = FakeReg
+
+        with patch.dict(sys.modules, {
+            "qniverse": types.ModuleType("qniverse"),
+            "qniverse.gates": mock_gates_mod,
+            "qniverse.QniverseCircuit": mock_qc_mod
+        }):
+            ops = [Op("h", (0,))]
+            res = optimize(ops)
+            self.assertEqual(res.report["backend"], "fallback")
+            self.assertEqual(res.report["fallback_reason"], "Simulated Qniverse hardware constraint: gate rejected")
+            self.assertTrue(any("Simulated Qniverse hardware constraint" in w for w in res.report["warnings"]))
 
     # ------------------------------------------------ NON-MUTATION TESTS
     def test_original_circuit_immutability(self):
