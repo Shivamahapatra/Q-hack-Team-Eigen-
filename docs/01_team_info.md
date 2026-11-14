@@ -5,10 +5,11 @@
 - **Institution**: PES University (PESU), Bengaluru
 - **Event**: PESU - C-DAC Quantum Hackathon 2026
 - **Target Platform**: C-DAC Qniverse Platform & QSDK
-- **Selected Challenge Pipeline**:
-  - **QC-C2-04**: OpenQASM 2.0/3.0 to QniverseCircuit Converter
-  - **QC-03-03**: Quantum Circuit Optimization Using QSDK
-  - **QC-C1-01**: Circuit Profiling and Limited Basis-Gate Decomposition
+- **Current Primary Challenge**:
+  - **QC-C1-01**: Circuit Profiling and Limited Basis-Gate Decomposition (Class I)
+- **Additional Track Roadmap**:
+  - **QC-C2-04**: OpenQASM 2.0/3.0 to QniverseCircuit Converter (Class II)
+  - **QC-03-03**: Quantum Circuit Optimization Using QSDK (Class III)
 
 Together, these three problem statements form an integrated, end-to-end **Quantum Compilation, Optimization, and Profiling Suite** for C-DAC's Qniverse platform.
 
