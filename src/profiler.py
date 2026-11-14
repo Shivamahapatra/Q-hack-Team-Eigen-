@@ -1,5 +1,4 @@
-# profiler.py
-
+import matplotlib.pyplot as plt
 from collections import Counter
 from dataclasses import dataclass
 from typing import List, Dict, Any
@@ -123,12 +122,33 @@ def print_profile(profile: Dict[str, Any]) -> None:
 
 
 # Small test circuit
+# Function to plot gate counts
+def plot_gate_counts(profile):
+    gate_counts = profile["gate_count_by_type"]
+
+    if not gate_counts:
+        print("No gates available to plot.")
+        return
+
+    plt.figure(figsize=(8, 5))
+
+    plt.bar(gate_counts.keys(), gate_counts.values())
+
+    plt.xlabel("Gate Type")
+    plt.ylabel("Number of Gates")
+    plt.title("Quantum Circuit Gate Distribution")
+    plt.grid(axis="y", linestyle="--", alpha=0.5)
+
+    plt.show()
+
+
+# Small test circuit
 if __name__ == "__main__":
 
     sample_operations = [
         Operation("H", [0]),
         Operation("X", [1]),
-        Operation("CNOT", [0, 1]),
+        Operation("CZ", [0, 1]),
         Operation("Z", [0]),
         Operation("measurement", [1], "measurement")
     ]
@@ -139,3 +159,6 @@ if __name__ == "__main__":
     )
 
     print_profile(result)
+
+    # Display bar graph
+    plot_gate_counts(result)
