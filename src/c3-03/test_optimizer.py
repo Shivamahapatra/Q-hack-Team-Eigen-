@@ -24,6 +24,10 @@ from optimizer import (
     PASS_SELF_INVERSE_CANCELLATION,
     PASS_CX_CANCELLATION,
     SUPPORTED_PASSES,
+    _reconstruct_circuit,
+    _validate_register_layouts,
+    _validate_circuit_ops,
+    _verify_structural_placement,
 )
 
 
@@ -405,6 +409,153 @@ class TestQC0303Optimizer(unittest.TestCase):
         )
         self.assertFalse(res3["equivalent"])
         self.assertFalse(res3["structural_preservation_verified"])
+
+    # ---------------------------------- DEF-03: RECONSTRUCTION TESTS
+    def test_def03_reconstruction_unsupported_gate_raises(self):
+        """DEF-03: Unsupported or unknown gates raise ValueError and are never dropped."""
+        with self.assertRaises(ValueError) as ctx:
+            _reconstruct_circuit([Op("completely_unsupported_gate", (0,))], 1, 0)
+        self.assertIn("unsupported", str(ctx.exception).lower())
+
+    def test_def03_reconstruction_preserves_all_ops_in_order(self):
+        """DEF-03: Circuit reconstruction preserves exact operation count and ordering without silent drops."""
+        ops = [
+            Op("h", (0,)),
+            Op("barrier", (0, 1)),
+            Op("cx", (0, 1)),
+            Op("reset", (1,)),
+            Op("measure", (0,), (0,))
+        ]
+        qc = _reconstruct_circuit(ops, 2, 1)
+        self.assertEqual(len(qc.operations), 5)
+        self.assertEqual(qc.operations[0][0].name, "H")
+        self.assertEqual(qc.operations[1][0].name, "Barrier")
+        self.assertEqual(qc.operations[2][0].name, "CX")
+        self.assertEqual(qc.operations[3][0].name, "Reset")
+        self.assertEqual(qc.operations[4][0].name, "Measure")
+
+    # ---------------------------------- DEF-04: PARAMETERIZED GATES TESTS
+    def test_def04_parameterized_rx_rejected(self):
+        """DEF-04: Parameterized RX gates are rejected with ValueError to prevent parameter loss."""
+        with self.assertRaises(ValueError) as ctx:
+            optimize([Op("rx", (0,))])
+        self.assertIn("parameterized gate", str(ctx.exception).lower())
+
+    def test_def04_parameterized_ry_rejected(self):
+        """DEF-04: Parameterized RY gates are rejected with ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            optimize([Op("ry", (0,))])
+        self.assertIn("parameterized gate", str(ctx.exception).lower())
+
+    def test_def04_parameterized_rz_rejected(self):
+        """DEF-04: Parameterized RZ gates are rejected with ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            optimize([Op("rz", (0,))])
+        self.assertIn("parameterized gate", str(ctx.exception).lower())
+
+    def test_def04_parameterized_controlled_gate_rejected(self):
+        """DEF-04: Controlled parameterized gates (e.g. CRX) are rejected with ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            optimize([Op("crx", (0, 1))])
+        self.assertIn("parameterized gate", str(ctx.exception).lower())
+
+    def test_def04_equivalence_rejects_parameterized_circuit(self):
+        """DEF-04: Equivalence engine never claims mathematical equivalence for parameterized circuits."""
+        res = verify_equivalence([Op("rx", (0,))], [Op("rx", (0,))], 1)
+        self.assertEqual(res["type"], "parameterized_unsupported")
+        self.assertFalse(res["equivalent"])
+        self.assertFalse(res["mathematical_equivalence_verified"])
+
+    # ---------------------------------- DEF-05: MID-CIRCUIT STRUCTURAL TESTS
+    def test_def05_adversarial_unitary_moved_across_measurement(self):
+        """DEF-05: Unitary operations moved across a mid-circuit measurement fail structural verification."""
+        orig = [Op("h", (0,)), Op("measure", (0,), (0,)), Op("x", (0,))]
+        corrupted = [Op("h", (0,)), Op("x", (0,)), Op("measure", (0,), (0,))]  # X moved before measure
+        res = verify_equivalence(orig, corrupted, 1)
+        self.assertFalse(res["structural_preservation_verified"])
+        self.assertIsNone(res["equivalent"])
+
+    def test_def05_adversarial_unitary_moved_across_reset(self):
+        """DEF-05: Unitary operations moved across a reset fail structural verification."""
+        orig = [Op("x", (0,)), Op("reset", (0,)), Op("h", (0,))]
+        corrupted = [Op("x", (0,)), Op("h", (0,)), Op("reset", (0,))]  # H moved before reset
+        res = verify_equivalence(orig, corrupted, 1)
+        self.assertFalse(res["structural_preservation_verified"])
+        self.assertIsNone(res["equivalent"])
+
+    def test_def05_mid_circuit_equivalent_remains_none(self):
+        """DEF-05: Valid mid-circuit structural preservation still sets equivalent: None (semantic unverified)."""
+        ops = [Op("h", (0,)), Op("measure", (0,), (0,)), Op("x", (0,)), Op("x", (0,))]
+        res = optimize(ops)
+        self.assertIsNone(res.report["equivalence"]["equivalent"])
+        self.assertTrue(res.report["equivalence"]["structural_preservation_verified"])
+        self.assertEqual(res.report["status"], "OK_SEMANTIC_UNVERIFIED")
+
+    # ---------------------------------- DEF-06: TERMINAL MEASUREMENT BARRIERS TESTS
+    def test_def06_terminal_measurement_removed_barrier_fails(self):
+        """DEF-06: Removing a barrier in a terminal measurement circuit fails structural verification."""
+        orig = [Op("h", (0,)), Op("barrier", (0,)), Op("measure", (0,), (0,))]
+        corrupted = [Op("h", (0,)), Op("measure", (0,), (0,))]  # Barrier removed!
+        res = verify_equivalence(orig, corrupted, 1)
+        self.assertFalse(res["equivalent"])
+        self.assertFalse(res["structural_preservation_verified"])
+
+    def test_def06_terminal_measurement_relocated_barrier_fails(self):
+        """DEF-06: Relocating a barrier across unitary operations in a terminal circuit fails structural verification."""
+        orig = [Op("h", (0,)), Op("barrier", (0,)), Op("x", (0,)), Op("measure", (0,), (0,))]
+        corrupted = [Op("h", (0,)), Op("x", (0,)), Op("barrier", (0,)), Op("measure", (0,), (0,))]  # Barrier moved
+        res = verify_equivalence(orig, corrupted, 1)
+        self.assertFalse(res["equivalent"])
+        self.assertFalse(res["structural_preservation_verified"])
+
+    # ---------------------------------- DEF-07: MALFORMED INPUTS & EMPTY CIRCUITS TESTS
+    def test_def07_zero_qubit_with_operations_rejected(self):
+        """DEF-07: Having operations with 0 declared qubits is rejected as dimension mismatch."""
+        res = verify_equivalence([Op("x", (0,))], [Op("x", (0,))], 0)
+        self.assertFalse(res["equivalent"])
+        self.assertEqual(res["type"], "invalid")
+        self.assertEqual(res["method"], "dimension_mismatch")
+
+    def test_def07_invalid_qubit_index_rejected(self):
+        """DEF-07: Out-of-range qubit indices in operations raise ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            _validate_circuit_ops([Op("x", (5,))], num_qubits=2, num_clbits=0)
+        self.assertIn("invalid qubit index", str(ctx.exception).lower())
+
+    def test_def07_invalid_gate_arity_rejected(self):
+        """DEF-07: Multi-qubit gates with invalid arity or duplicate operands raise ValueError."""
+        # CX requires 2 qubits
+        with self.assertRaises(ValueError):
+            _validate_circuit_ops([Op("cx", (0,))], num_qubits=2, num_clbits=0)
+        # CX cannot have duplicate qubits
+        with self.assertRaises(ValueError):
+            _validate_circuit_ops([Op("cx", (0, 0))], num_qubits=2, num_clbits=0)
+
+    def test_def07_invalid_classical_index_rejected(self):
+        """DEF-07: Out-of-range classical bit indices in measurements raise ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            _validate_circuit_ops([Op("measure", (0,), (9,))], num_qubits=1, num_clbits=1)
+        self.assertIn("invalid classical bit index", str(ctx.exception).lower())
+
+    # ---------------------------------- DEF-08: REGISTER LAYOUT TESTS
+    def test_def08_inconsistent_register_sum_rejected(self):
+        """DEF-08: Inconsistent register sizes that do not sum to declared wire counts raise ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            _validate_register_layouts([("q", 2)], num_qubits=3, c_layout=[], num_clbits=0)
+        self.assertIn("does not match declared num_qubits", str(ctx.exception))
+
+    def test_def08_duplicate_register_names_rejected(self):
+        """DEF-08: Duplicate register names raise ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            _validate_register_layouts([("q", 1), ("q", 1)], num_qubits=2, c_layout=[], num_clbits=0)
+        self.assertIn("duplicate quantum register name", str(ctx.exception).lower())
+
+    def test_def08_never_fabricates_fallback_wire(self):
+        """DEF-08: Querying an out-of-range wire index raises ValueError rather than fabricating fallback wire."""
+        with self.assertRaises(ValueError) as ctx:
+            _reconstruct_circuit([Op("x", (2,))], num_qubits=2, num_clbits=0, q_layout=[("q", 2)])
+        err_msg = str(ctx.exception).lower()
+        self.assertTrue("out of range" in err_msg or "invalid qubit index" in err_msg)
 
 
 if __name__ == "__main__":

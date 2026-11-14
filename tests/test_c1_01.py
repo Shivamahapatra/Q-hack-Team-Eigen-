@@ -63,6 +63,72 @@ class TestC1_01ProfilerAndDecomposer(unittest.TestCase):
         # Mathematical verification
         self.assertTrue(equal_up_to_phase(unitary(ops, 2), unitary(new_ops, 2)))
 
+    def test_valid_decomposition_cz(self):
+        """Tests decomposing a CZ gate into basis {h, cx}."""
+        ops = [Op("cz", (0, 1))]
+        new_ops, report = decompose(ops, 2, {"h", "cx"})
+        self.assertIsNotNone(new_ops)
+        self.assertEqual(report["status"], "OK")
+        self.assertEqual(len(new_ops), 3)  # h, cx, h
+        self.assertTrue(all(o.name in {"h", "cx"} for o in new_ops))
+        self.assertTrue(equal_up_to_phase(unitary(ops, 2), unitary(new_ops, 2)))
+
+    def test_valid_decomposition_id(self):
+        """Tests decomposing an identity gate into basis {h, cx}."""
+        ops = [Op("id", (0,))]
+        new_ops, report = decompose(ops, 1, {"h", "cx"})
+        self.assertIsNotNone(new_ops)
+        self.assertEqual(report["status"], "OK")
+        self.assertEqual(len(new_ops), 2)  # h, h
+        self.assertTrue(all(o.name in {"h", "cx"} for o in new_ops))
+        self.assertTrue(equal_up_to_phase(unitary(ops, 1), unitary(new_ops, 1)))
+
+    def test_valid_decomposition_cy(self):
+        """Tests decomposing a controlled-Y (CY) gate into Clifford+T."""
+        ops = [Op("cy", (0, 1))]
+        new_ops, report = decompose(ops, 2, {"h", "t", "tdg", "cx"})
+        self.assertIsNotNone(new_ops)
+        self.assertEqual(report["status"], "OK")
+        self.assertTrue(all(o.name in {"h", "t", "tdg", "cx"} for o in new_ops))
+        self.assertTrue(equal_up_to_phase(unitary(ops, 2), unitary(new_ops, 2)))
+
+    def test_valid_decomposition_toffoli(self):
+        """Tests decomposing a 3-qubit Toffoli (CCX) gate into Clifford+T."""
+        ops = [Op("ccx", (0, 1, 2))]
+        new_ops, report = decompose(ops, 3, {"h", "t", "tdg", "cx"})
+        self.assertIsNotNone(new_ops)
+        self.assertEqual(report["status"], "OK")
+        self.assertEqual(len(new_ops), 15)
+        self.assertTrue(all(o.name in {"h", "t", "tdg", "cx"} for o in new_ops))
+        self.assertTrue(equal_up_to_phase(unitary(ops, 3), unitary(new_ops, 3)))
+
+    def test_valid_decomposition_pauli_and_clifford(self):
+        """Tests decomposing single-qubit gates (X, Y, Z, S, Sdg) into Clifford+T."""
+        for gname in ["x", "y", "z", "s", "sdg"]:
+            ops = [Op(gname, (0,))]
+            new_ops, report = decompose(ops, 1, {"h", "t", "tdg", "cx"})
+            self.assertIsNotNone(new_ops, f"Failed to decompose {gname}")
+            self.assertEqual(report["status"], "OK")
+            self.assertTrue(all(o.name in {"h", "t", "tdg", "cx"} for o in new_ops))
+            self.assertTrue(equal_up_to_phase(unitary(ops, 1), unitary(new_ops, 1)), f"Equivalence failed for {gname}")
+
+    def test_heterogeneous_circuit(self):
+        """Tests decomposing a multi-gate circuit with H, CZ, SWAP, and measurement."""
+        qasm_in = """OPENQASM 2.0;
+include "qelib1.inc";
+qreg q[2];
+creg c[1];
+h q[0];
+cz q[0], q[1];
+swap q[0], q[1];
+measure q[0] -> c[0];
+"""
+        new_circ, report = analyze(qasm_in, {"h", "cx"})
+        self.assertEqual(report["status"], "OK")
+        self.assertEqual(report["before"]["total_gates"], 3)  # h, cz, swap
+        self.assertEqual(report["after"]["total_gates"], 7)   # h + 3(cz) + 3(swap) = 7
+        self.assertEqual(report["after"]["measurements"], 1)
+
     def test_unsupported_operation_reported(self):
         """Tests that an operation without decomposition rule returns an explicit report."""
         ops = [Op("h", (0,)), Op("unsupported_gate", (0,))]

@@ -32,6 +32,160 @@ SUPPORTED_PASSES = [
 
 SELF_INVERSE_GATES = {"x", "h", "z"}
 
+PARAMETERISED_GATES = {
+    "rx", "ry", "rz", "p", "u1", "u2", "u3",
+    "crx", "cry", "crz", "cp", "cu1", "cu2", "cu3"
+}
+
+VALID_GATES_ARITY = {
+    # 1-qubit gates
+    "id": (1, 0), "x": (1, 0), "y": (1, 0), "z": (1, 0),
+    "h": (1, 0), "s": (1, 0), "sdg": (1, 0), "t": (1, 0), "tdg": (1, 0),
+    "reset": (1, 0),
+    # 2-qubit gates
+    "cx": (2, 0), "cz": (2, 0), "swap": (2, 0),
+    # 3-qubit gates
+    "ccx": (3, 0),
+    # Measurement: 1 qubit, 1 classical bit
+    "measure": (1, 1),
+}
+
+
+def _validate_register_layouts(
+    q_layout: List[Tuple[str, int]],
+    num_qubits: int,
+    c_layout: List[Tuple[str, int]],
+    num_clbits: int
+) -> None:
+    """Validates quantum and classical register definitions (DEF-08)."""
+    # Validate quantum registers
+    q_names = set()
+    total_q = 0
+    for item in q_layout:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            raise ValueError(f"Malformed quantum register entry: {item}")
+        name, size = item
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"Invalid quantum register name: '{name}'")
+        if name in q_names:
+            raise ValueError(f"Duplicate quantum register name: '{name}'")
+        q_names.add(name)
+        if not isinstance(size, int) or size <= 0:
+            raise ValueError(f"Invalid size {size} for quantum register '{name}'. Size must be > 0.")
+        total_q += size
+
+    if total_q != num_qubits:
+        raise ValueError(
+            f"Quantum register sizes sum to {total_q}, which does not match declared num_qubits {num_qubits}."
+        )
+
+    # Validate classical registers
+    c_names = set()
+    total_c = 0
+    for item in c_layout:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            raise ValueError(f"Malformed classical register entry: {item}")
+        name, size = item
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"Invalid classical register name: '{name}'")
+        if name in c_names:
+            raise ValueError(f"Duplicate classical register name: '{name}'")
+        c_names.add(name)
+        if not isinstance(size, int) or size <= 0:
+            raise ValueError(f"Invalid size {size} for classical register '{name}'. Size must be > 0.")
+        total_c += size
+
+    if total_c != num_clbits:
+        raise ValueError(
+            f"Classical register sizes sum to {total_c}, which does not match declared num_clbits {num_clbits}."
+        )
+
+
+def _validate_circuit_ops(ops: List[Op], num_qubits: int, num_clbits: int) -> None:
+    """Validates operation arities, wire bounds, and rejects parameterized gates (DEF-04, DEF-07)."""
+    if num_qubits == 0 and len(ops) > 0:
+        raise ValueError("Circuit contains operations but declared num_qubits is 0.")
+
+    for op in ops:
+        if not isinstance(op, Op):
+            raise TypeError(f"Invalid operation object: expected Op, got {type(op)}")
+
+        gname = op.name.lower()
+        if gname in PARAMETERISED_GATES:
+            raise ValueError(
+                f"Parameterized gate '{op.name}' is not supported: gate parameters cannot be safely "
+                f"extracted or preserved. Circuit rejected before optimization to prevent parameter loss."
+            )
+
+        if gname == "barrier":
+            if not op.qubits or len(op.qubits) == 0:
+                raise ValueError("Barrier operation must span at least 1 qubit.")
+            if op.cbits and len(op.cbits) > 0:
+                raise ValueError("Barrier operation cannot target classical bits.")
+            for q in op.qubits:
+                if not isinstance(q, int) or q < 0 or q >= num_qubits:
+                    raise ValueError(f"Invalid qubit index {q} in barrier. Circuit has {num_qubits} qubits.")
+            if len(set(op.qubits)) != len(op.qubits):
+                raise ValueError(f"Duplicate qubits in barrier: {op.qubits}")
+
+        elif gname in VALID_GATES_ARITY:
+            exp_q, exp_c = VALID_GATES_ARITY[gname]
+            if len(op.qubits) != exp_q:
+                raise ValueError(f"Gate '{gname}' requires {exp_q} qubits, got {len(op.qubits)}: {op.qubits}")
+            if len(op.cbits) != exp_c:
+                raise ValueError(f"Gate '{gname}' requires {exp_c} classical bits, got {len(op.cbits)}: {op.cbits}")
+
+            for q in op.qubits:
+                if not isinstance(q, int) or q < 0 or q >= num_qubits:
+                    raise ValueError(f"Invalid qubit index {q} for gate '{gname}'. Circuit has {num_qubits} qubits.")
+            if len(set(op.qubits)) != len(op.qubits):
+                raise ValueError(f"Duplicate qubits in gate '{gname}': {op.qubits}")
+
+            for c in op.cbits:
+                if not isinstance(c, int) or c < 0 or c >= num_clbits:
+                    raise ValueError(f"Invalid classical bit index {c} for gate '{gname}'. Circuit has {num_clbits} clbits.")
+        else:
+            raise ValueError(f"Unsupported or unrecognized operation '{op.name}' in circuit.")
+
+
+def _verify_structural_placement(orig_ops: List[Op], opt_ops: List[Op], delimiter_names: Set[str]) -> bool:
+    """
+    Verifies that all delimiter operations (e.g. non-unitaries or barriers) match exactly in identity,
+    operands, and sequence, AND that unitary operations maintain their relative placement
+    without ever crossing any delimiter boundary (DEF-05, DEF-06).
+    """
+    # 1. Delimiters must match exactly in name, qubits, cbits, and order
+    orig_delims = [o for o in orig_ops if o.name in delimiter_names]
+    opt_delims = [o for o in opt_ops if o.name in delimiter_names]
+    if orig_delims != opt_delims:
+        return False
+
+    # 2. Partition into segments divided by delimiters
+    orig_segments: List[List[Op]] = [[]]
+    for o in orig_ops:
+        if o.name in delimiter_names:
+            orig_segments.append([])
+        else:
+            orig_segments[-1].append(o)
+
+    opt_segments: List[List[Op]] = [[]]
+    for o in opt_ops:
+        if o.name in delimiter_names:
+            opt_segments.append([])
+        else:
+            opt_segments[-1].append(o)
+
+    if len(orig_segments) != len(opt_segments):
+        return False
+
+    # 3. In every segment, opt_segments[i] must be a valid subsequence of orig_segments[i]
+    for orig_seg, opt_seg in zip(orig_segments, opt_segments):
+        it = iter(orig_seg)
+        if not all(op in it for op in opt_seg):
+            return False
+
+    return True
+
 
 @dataclass
 class OptimizationResult:
@@ -167,6 +321,7 @@ def _reconstruct_circuit(
     - Qubit and classical bit ordering
     - Measurement destinations and non-unitary ordering
     - Circuit metadata
+    Validates input layouts and never silently drops operations (DEF-03, DEF-08).
     Falls back cleanly to an in-memory mock if the proprietary runtime is not installed.
     """
     # Normalize layouts
@@ -174,6 +329,10 @@ def _reconstruct_circuit(
         q_layout = [("q", num_qubits)] if num_qubits > 0 else []
     if not c_layout:
         c_layout = [("c", num_clbits)] if num_clbits > 0 else []
+
+    # Validate register layouts and ops before reconstruction (DEF-03, DEF-08)
+    _validate_register_layouts(q_layout, num_qubits, c_layout, num_clbits)
+    _validate_circuit_ops(ops, num_qubits, num_clbits)
 
     # Attempt to build via live Qniverse SDK if available
     try:
@@ -202,19 +361,30 @@ def _reconstruct_circuit(
 
         for o in ops:
             if o.name == "measure":
-                new_qc.add_gate(G.measure, q_map[o.qubits[0]], c_map[o.cbits[0]])
+                gate_fn = getattr(G, "measure", None)
+                if not gate_fn:
+                    raise ValueError("Cannot reconstruct circuit: 'measure' not supported in Qniverse gates")
+                new_qc.add_gate(gate_fn, q_map[o.qubits[0]], c_map[o.cbits[0]])
             elif o.name == "barrier":
                 gate_fn = getattr(G, "barrier", None)
-                if gate_fn:
-                    new_qc.add_gate(gate_fn, *[q_map[q] for q in o.qubits])
+                if not gate_fn:
+                    raise ValueError("Cannot reconstruct circuit: 'barrier' not supported in Qniverse gates")
+                new_qc.add_gate(gate_fn, *[q_map[q] for q in o.qubits])
             elif o.name == "reset":
                 gate_fn = getattr(G, "reset", None)
-                if gate_fn:
-                    new_qc.add_gate(gate_fn, q_map[o.qubits[0]])
+                if not gate_fn:
+                    raise ValueError("Cannot reconstruct circuit: 'reset' not supported in Qniverse gates")
+                new_qc.add_gate(gate_fn, q_map[o.qubits[0]])
             else:
                 gate_fn = getattr(G, o.name, None)
-                if gate_fn:
-                    new_qc.add_gate(gate_fn, *[q_map[q] for q in o.qubits])
+                if not gate_fn:
+                    raise ValueError(f"Cannot reconstruct circuit: gate '{o.name}' not supported in Qniverse gates")
+                new_qc.add_gate(gate_fn, *[q_map[q] for q in o.qubits])
+
+        if len(new_qc.operations) != len(ops):
+            raise RuntimeError(
+                f"Reconstructed circuit operation count mismatch: expected {len(ops)}, got {len(new_qc.operations)}"
+            )
 
         if metadata:
             new_qc.metadata = copy.deepcopy(metadata)
@@ -244,11 +414,14 @@ def _reconstruct_circuit(
 
         class _MockGate:
             def __init__(self, name: str):
-                if name.lower() == "measure":
+                lower_name = name.lower()
+                if lower_name not in VALID_GATES_ARITY and lower_name != "barrier":
+                    raise ValueError(f"Cannot reconstruct operation: unsupported gate type '{name}'")
+                if lower_name == "measure":
                     self.name = "Measure"
-                elif name.lower() == "barrier":
+                elif lower_name == "barrier":
                     self.name = "Barrier"
-                elif name.lower() == "reset":
+                elif lower_name == "reset":
                     self.name = "Reset"
                 else:
                     self.name = name.upper()
@@ -259,9 +432,8 @@ def _reconstruct_circuit(
                 if curr <= idx < curr + size:
                     return _MockWire(kind, name, size, idx - curr)
                 curr += size
-            # Default fallback wire
-            reg_name = "q" if kind == "Qubit" else "c"
-            return _MockWire(kind, reg_name, idx + 1, idx)
+            # DEF-08: Never fabricate a fallback wire!
+            raise ValueError(f"Wire index {idx} out of range for declared {kind} layout (total size {curr})")
 
         class _MockQniverseCircuit:
             def __init__(
@@ -291,6 +463,11 @@ def _reconstruct_circuit(
                     else:
                         wires = tuple(_map_wire(q, q_lay, "Qubit") for q in o.qubits)
                     self.operations.append((_MockGate(o.name), wires))
+
+                if len(self.operations) != len(op_list):
+                    raise RuntimeError(
+                        f"Reconstructed mock circuit operation count mismatch: expected {len(op_list)}, got {len(self.operations)}"
+                    )
 
                 self.metadata = copy.deepcopy(meta) if meta else None
 
@@ -330,25 +507,26 @@ def verify_equivalence(
     Validates semantic and structural equivalence between original and optimized circuits.
 
     Rules:
-    A. Purely unitary circuits (+ barriers):
+    A. Empty Circuits (DEF-07):
+       - Trivially equivalent ONLY if both original and optimized op lists are empty.
+       - Returns dimension mismatch if ops exist on 0 declared qubits.
+    B. Parameterized Gates (DEF-04):
+       - Disallows equivalence claims for parameterized gates without angle extraction.
+    C. Purely unitary circuits (+ barriers):
        - Mathematical equivalence verified up to global phase using unitary matrix calculation.
-       - Barriers are treated as compilation boundaries and do not affect the unitary matrix.
-    B. Circuits with terminal measurements:
+       - Barriers are verified for operand, ordering, and relative gate placement (DEF-06).
+    D. Circuits with terminal measurements:
        - Verified that measurements appear strictly at the end of the circuit.
-       - The unitary prefix is mathematically verified up to global phase.
-       - Measurement operations, target qubits, destination bits, and order are verified structurally.
+       - Unitary prefix mathematically verified up to global phase.
+       - Non-unitary operations (measurements and barriers) verified structurally across circuit (DEF-06).
        - Returns 'equivalent': True only if BOTH pass.
-    C. Mid-circuit measurements or resets:
-       - Semantic equivalence cannot be verified via simple unitary simulation.
-       - Returns 'equivalent': None with explicit warning.
-       - Structural preservation of non-unitary ops is verified and reported separately.
+    E. Mid-circuit measurements or resets (DEF-05):
+       - Returns 'equivalent': None with explicit warning (semantic equivalence unverified).
+       - Structural placement relative to unitary ops is verified: gates must never cross non-unitary boundaries.
     """
-    has_measure = any(o.name == "measure" for o in original_ops)
-    has_reset = any(o.name == "reset" for o in original_ops)
-
-    # ------------------------------------------------- CASE A: Purely Unitary (+ Barriers)
-    if not has_measure and not has_reset:
-        if num_qubits == 0:
+    # ------------------------------------------------- Empty Circuit Validation (DEF-07)
+    if num_qubits == 0:
+        if len(original_ops) == 0 and len(optimized_ops) == 0:
             return {
                 "type": "unitary",
                 "equivalent": True,
@@ -357,28 +535,87 @@ def verify_equivalence(
                 "method": "trivial_empty_circuit",
                 "details": "Empty circuit trivially equivalent."
             }
+        else:
+            return {
+                "type": "invalid",
+                "equivalent": False,
+                "mathematical_equivalence_verified": False,
+                "structural_preservation_verified": False,
+                "method": "dimension_mismatch",
+                "details": "Circuit contains operations but declared qubit count is 0."
+            }
 
-        # Compute unitary matrices (barriers are automatically ignored by unitary())
+    # ------------------------------------------------- Parameterized Gates Check (DEF-04)
+    if any(o.name in PARAMETERISED_GATES for o in original_ops) or any(o.name in PARAMETERISED_GATES for o in optimized_ops):
+        return {
+            "type": "parameterized_unsupported",
+            "equivalent": False,
+            "mathematical_equivalence_verified": False,
+            "structural_preservation_verified": False,
+            "method": "parameterized_gates_unsupported",
+            "details": "Cannot verify equivalence for circuits containing parameterized gates without parameter angles."
+        }
+
+    # ------------------------------------------------- Validate Op Bounds & Arities (DEF-07)
+    for op in original_ops + optimized_ops:
+        gname = op.name.lower()
+        if gname == "barrier":
+            if not op.qubits or any(q < 0 or q >= num_qubits for q in op.qubits):
+                return {
+                    "type": "invalid",
+                    "equivalent": False,
+                    "mathematical_equivalence_verified": False,
+                    "structural_preservation_verified": False,
+                    "method": "malformed_operation_detected",
+                    "details": f"Barrier with invalid qubit indices: {op.qubits}"
+                }
+        elif gname in VALID_GATES_ARITY:
+            exp_q, _ = VALID_GATES_ARITY[gname]
+            if len(op.qubits) != exp_q or any(q < 0 or q >= num_qubits for q in op.qubits):
+                return {
+                    "type": "invalid",
+                    "equivalent": False,
+                    "mathematical_equivalence_verified": False,
+                    "structural_preservation_verified": False,
+                    "method": "malformed_operation_detected",
+                    "details": f"Gate '{gname}' with invalid qubit indices or arity: {op.qubits}"
+                }
+        else:
+            return {
+                "type": "invalid",
+                "equivalent": False,
+                "mathematical_equivalence_verified": False,
+                "structural_preservation_verified": False,
+                "method": "unsupported_gate",
+                "details": f"Unsupported or unrecognized operation '{op.name}'"
+            }
+
+    has_measure = any(o.name == "measure" for o in original_ops)
+    has_reset = any(o.name == "reset" for o in original_ops)
+
+    # ------------------------------------------------- CASE A: Purely Unitary (+ Barriers)
+    if not has_measure and not has_reset:
         u_orig = unitary(original_ops, num_qubits)
         u_opt = unitary(optimized_ops, num_qubits)
         is_equiv = equal_up_to_phase(u_orig, u_opt)
 
-        # Check barrier preservation if barriers exist
-        orig_barriers = [o for o in original_ops if o.name == "barrier"]
-        opt_barriers = [o for o in optimized_ops if o.name == "barrier"]
-        barriers_preserved = (orig_barriers == opt_barriers)
+        barriers_preserved = _verify_structural_placement(original_ops, optimized_ops, {"barrier"})
+        both_passed = bool(is_equiv and barriers_preserved)
 
         return {
             "type": "unitary",
-            "equivalent": bool(is_equiv and barriers_preserved),
+            "equivalent": both_passed,
             "mathematical_equivalence_verified": bool(is_equiv),
             "structural_preservation_verified": barriers_preserved,
-            "method": "equal_up_to_phase (tolerance 1e-9)",
-            "details": "Mathematical unitary equivalence proven up to global phase."
+            "method": "equal_up_to_phase (tolerance 1e-9) and barrier_structural_placement",
+            "details": (
+                "Mathematical unitary equivalence proven up to global phase; barriers structurally verified."
+                if both_passed
+                else "Unitary equivalence or barrier preservation check failed."
+            )
         }
 
     # ------------------------------------------------- Check for Terminal Measurements
-    # Measurements are terminal if after the first measurement, only measurements or barriers follow.
     first_meas_orig = next((i for i, o in enumerate(original_ops) if o.name == "measure"), -1)
     orig_post_meas = original_ops[first_meas_orig:] if first_meas_orig != -1 else []
     orig_is_terminal = (
@@ -395,7 +632,7 @@ def verify_equivalence(
     )
 
     if orig_is_terminal and opt_is_terminal:
-        # --------------------------------------------- CASE B: Terminal Measurements
+        # --------------------------------------------- CASE B: Terminal Measurements (DEF-06)
         orig_prefix = original_ops[:first_meas_orig]
         opt_prefix = optimized_ops[:first_meas_opt]
 
@@ -407,34 +644,27 @@ def verify_equivalence(
         else:
             prefix_equiv = True
 
-        # Verify exact structural preservation of terminal measurements
-        orig_meas_list = [o for o in original_ops if o.name == "measure"]
-        opt_meas_list = [o for o in optimized_ops if o.name == "measure"]
-        meas_preserved = (orig_meas_list == opt_meas_list)
+        # Verify structural preservation of all non-unitaries (measurements AND barriers throughout circuit)
+        structural_preserved = _verify_structural_placement(original_ops, optimized_ops, NON_UNITARY)
 
-        both_passed = prefix_equiv and meas_preserved
+        both_passed = prefix_equiv and structural_preserved
 
         return {
             "type": "terminal_measurement_verified",
             "equivalent": both_passed,
             "mathematical_equivalence_verified": prefix_equiv,
-            "structural_preservation_verified": meas_preserved,
-            "method": "unitary_prefix_matrix_and_measurement_preservation",
+            "structural_preservation_verified": structural_preserved,
+            "method": "unitary_prefix_matrix_and_non_unitary_structural_placement",
             "details": (
                 "Unitary prefix mathematically verified via equal_up_to_phase; "
-                "terminal measurements verified structurally in-order."
+                "measurements and barriers verified structurally in-order without boundary crossing."
                 if both_passed
-                else "Terminal measurement verification failed."
+                else "Terminal measurement or barrier verification failed."
             )
         }
 
-    # ------------------------------------------------- CASE C: Mid-Circuit Non-Unitary / Resets
-    orig_non_unitaries = [o for o in original_ops if o.name in NON_UNITARY]
-    opt_non_unitaries = [o for o in optimized_ops if o.name in NON_UNITARY]
-    structural_match = (
-        len(orig_non_unitaries) == len(opt_non_unitaries)
-        and all(o1 == o2 for o1, o2 in zip(orig_non_unitaries, opt_non_unitaries))
-    )
+    # ------------------------------------------------- CASE C: Mid-Circuit Non-Unitary / Resets (DEF-05)
+    structural_match = _verify_structural_placement(original_ops, optimized_ops, NON_UNITARY)
 
     return {
         "type": "mid_circuit_non_unitary_unverified",
@@ -444,7 +674,10 @@ def verify_equivalence(
         "method": "semantic_equivalence_not_verified",
         "details": (
             "Semantic equivalence cannot be verified via unitary simulation for circuits "
-            "with mid-circuit measurements or resets. Structural preservation is checked separately."
+            "with mid-circuit measurements or resets. Structural preservation of non-unitaries "
+            "and boundary placement is verified separately."
+            if structural_match
+            else "Structural preservation check failed: non-unitary operations were altered or gates crossed boundaries."
         )
     }
 
@@ -512,6 +745,16 @@ def optimize(
         c_layout = [("c", num_clbits)] if num_clbits > 0 else []
     else:
         raise TypeError(f"Unsupported circuit type for optimization: {type(qc)}")
+
+    # Normalize layouts if empty and qubits/clbits declared
+    if not q_layout:
+        q_layout = [("q", num_qubits)] if num_qubits > 0 else []
+    if not c_layout:
+        c_layout = [("c", num_clbits)] if num_clbits > 0 else []
+
+    # Layout and operation validation (DEF-04, DEF-07, DEF-08)
+    _validate_register_layouts(q_layout, num_qubits, c_layout, num_clbits)
+    _validate_circuit_ops(ops, num_qubits, num_clbits)
 
     # Strict immutability snapshot
     original_ops_snapshot = list(ops)

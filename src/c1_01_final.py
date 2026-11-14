@@ -65,6 +65,7 @@ RULES = {
     "y": [("sdg", (0,)), ("x", (0,)), ("s", (0,))],
     "z": [("h", (0,)), ("x", (0,)), ("h", (0,))],
     "cz": [("h", (1,)), ("cx", (0, 1)), ("h", (1,))],
+    "cy": [("sdg", (1,)), ("cx", (0, 1)), ("s", (1,))],
     "swap": [("cx", (0, 1)), ("cx", (1, 0)), ("cx", (0, 1))],
     "s": [("t", (0,)), ("t", (0,))],
     "sdg": [("tdg", (0,)), ("tdg", (0,))],
@@ -75,7 +76,10 @@ RULES = {
             ("t", (0,)), ("tdg", (1,)), ("cx", (0, 1))],
 }
 # Alternative rules tried if the first expansion hits a non-basis gate.
-ALT_RULES = {"z": [("s", (0,)), ("s", (0,))]}
+ALT_RULES = {
+    "z": [("s", (0,)), ("s", (0,))],
+    "id": [("h", (0,)), ("h", (0,))],
+}
 
 
 def _expand(op, basis, stack=()):
@@ -158,6 +162,13 @@ def _op_matrix(o, n):
             if bits[o.qubits[0]]: nb[o.qubits[1]] ^= 1
         elif o.name == "cz":
             pass
+        elif o.name == "cy":
+            if bits[o.qubits[0]]:
+                b = bits[o.qubits[1]]
+                nb[o.qubits[1]] ^= 1
+                phase = 1j if b == 0 else -1j
+                m[int("".join(map(str, nb)), 2), col] += phase
+                continue
         elif o.name == "swap":
             a, b = o.qubits; nb[a], nb[b] = bits[b], bits[a]
         elif o.name == "ccx":
@@ -424,11 +435,19 @@ def _tests():
 
     # 2) every rule is equivalent to the original gate (up to global phase)
     for name, n in [("id", 1), ("x", 1), ("y", 1), ("z", 1), ("s", 1), ("sdg", 1),
-                    ("cz", 2), ("swap", 2), ("ccx", 3)]:
+                    ("cz", 2), ("cy", 2), ("swap", 2), ("ccx", 3)]:
         orig = [Op(name, tuple(range(n)))]
         new, rep = decompose(orig, n, {"h", "t", "tdg", "cx"})
         assert new is not None, (name, rep)
         assert all(o.name in {"h", "t", "tdg", "cx"} for o in new)
+        assert equal_up_to_phase(unitary(orig, n), unitary(new, n)), name
+
+    # 2b) basis {"h", "cx"} support for id, cz, swap
+    for name, n in [("id", 1), ("cz", 2), ("swap", 2)]:
+        orig = [Op(name, tuple(range(n)))]
+        new, rep = decompose(orig, n, {"h", "cx"})
+        assert new is not None, (name, rep)
+        assert all(o.name in {"h", "cx"} for o in new)
         assert equal_up_to_phase(unitary(orig, n), unitary(new, n)), name
 
     # 3) unsupported op is reported; input untouched

@@ -125,12 +125,13 @@ result = optimize(
 ---
 
 ## 5. Safety & Register Preservation
-- **Register Architecture Preservation**: Multi-register layouts (`QuantumRegister` and `ClassicalRegister`) maintain their exact names, sizes, ordering, and wire indices. Circuit metadata is deepcopied and preserved intact.
-- **No Gate Reordering**: The sequence of gates is never permuted.
-- **Barriers**: Gates on opposite sides of a `barrier` are never combined or cancelled. Barriers are treated as optimization boundaries, not as non-unitary state-collapsing gates.
-- **Measurements & Resets**: Act as non-unitary boundaries. Gates before and after a measurement/reset cannot cancel across them.
+- **Zero Operation Dropping (DEF-03)**: Every input operation must be reconstructed successfully or raise an explicit `ValueError`. Reconstructed operation counts and sequence ordering are strictly validated.
+- **Fail-Fast Parameterized Gate Rejection (DEF-04)**: Circuits with continuous parameterized rotation gates (`rx`, `ry`, `rz`, `p`, `u1`, `u2`, `u3`, `crx`, etc.) are explicitly rejected before optimization to guarantee parameters are never silently discarded.
+- **Rigorous Boundary Preservation (DEF-05, DEF-06)**: Unitary operations are strictly validated never to cross non-unitary delimiters (`measure`, `reset`, `barrier`). Missing, moved, or reordered barriers or measurements immediately fail structural verification.
+- **Register Architecture Preservation (DEF-08)**: Multi-register layouts (`QuantumRegister` and `ClassicalRegister`) maintain their exact names, sizes, ordering, and wire indices. Register size sums are verified against wire declarations. Out-of-range wire indices raise an explicit exception and are never fabricated. Circuit metadata is deepcopied and preserved intact.
+- **Dimension & Arity Validation (DEF-07)**: Malformed operations, invalid qubit indices, arity violations, and dimension mismatches are strictly rejected upfront.
+- **No Gate Permutation / Commutation**: The sequence of gates is never reordered. Only strictly adjacent identical self-inverse pairs or identical CX pairs are cancelled.
 - **Reversed CX Safeguard**: `CX(0, 1)` followed by `CX(1, 0)` is strictly preserved because $\text{CX}(0, 1)\text{CX}(1, 0) \neq I$.
-- **Error Rejection**: Passing an invalid or unknown pass name immediately raises a descriptive `ValueError`.
 
 ---
 
@@ -140,20 +141,20 @@ Reuses verified numerical linear algebra utilities from `src/c1_01_final.py` acr
 1. **Tier A: Purely Unitary Circuits (+ Barriers)**:
    - Calculates the exact full system matrix: $U_{\text{orig}} = \prod_k U_k$ and $U_{\text{opt}} = \prod_j U_j$.
    - Validates that $U_{\text{orig}} \approx e^{i\theta} U_{\text{opt}}$ within absolute tolerance $10^{-9}$ using `equal_up_to_phase()`.
-   - Barriers are treated as compilation boundaries and do not affect the unitary matrix, but are verified for structural preservation.
-   - Returns `"equivalent": True` with `"mathematical_equivalence_verified": True`.
+   - Barriers are treated as compilation boundaries: verified for operand, sequence, and relative gate placement via delimiter segment matching (`_verify_structural_placement`).
+   - Returns `"equivalent": True` only when mathematical equivalence AND barrier placement pass.
 
 2. **Tier B: Circuits with Terminal Measurements**:
    - Asserts that measurements appear strictly at the end of the circuit execution.
    - Extracts the unitary operations executed prior to measurements.
    - Mathematically verifies the unitary prefix up to global phase using `equal_up_to_phase()`.
-   - Structurally checks that all terminal measurement operations, qubit wires, classical target bits, and ordering are preserved.
+   - Structurally checks that all non-unitary operations (terminal measurements AND barriers across the circuit) are preserved without gate boundary crossing.
    - Returns `"equivalent": True` only when BOTH mathematical and structural checks pass.
 
 3. **Tier C: Circuits with Mid-Circuit Measurements or Resets**:
    - Because state collapse / non-unitary resets prevent unitary matrix comparison, semantic equivalence is **not** claimed.
    - Returns `"equivalent": None`, status `"OK_SEMANTIC_UNVERIFIED"`, and an explicit diagnostic warning.
-   - Structural preservation of non-unitary operations is verified and reported separately as `"structural_preservation_verified": True`.
+   - Structural preservation of non-unitary operations and boundary placement relative to unitary gates is verified separately via delimiter segment matching and reported as `"structural_preservation_verified": True`.
 
 ---
 
@@ -196,4 +197,4 @@ python src/c3-03/demo.py
 ## 9. Known Limitations
 1. **Conservative Adjacency Only**: Does not commute independent single-qubit gates across CNOT controls/targets to discover non-adjacent cancellations.
 2. **Phase Fusion Omitted**: Advanced multi-gate fusions (e.g. $T \cdot T \to S$, $S \cdot S \to Z$) are reserved for higher optimization tiers to maintain conservative certification.
-3. **Parameterised Rotations**: Continuous angle fusions ($R_x(\theta_1) R_x(\theta_2)$) are not performed in this version.
+3. **Parameterized Rotations (DEF-04 Fail-Fast)**: Circuits with parameterized gates (`rx`, `ry`, `rz`, `u3`, `crx`, etc.) are explicitly rejected before optimization because runtime parameter preservation is not implemented in the current SDK adapter. Parameterized circuits will raise `ValueError` to ensure parameters are never lost.
