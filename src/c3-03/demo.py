@@ -65,7 +65,8 @@ def run_demonstrations():
     for k, v in res_a.report["after"].items():
         print(f"  {k:22s}: {v}")
 
-    print("\nPasses Applied        :", res_a.report["passes_applied"])
+    print("\nRuntime Backend       :", res_a.report.get("backend", "unknown"))
+    print("Passes Applied        :", res_a.report["passes_applied"])
     print("Gates Removed         :", res_a.report["gates_removed"])
     print("Reduction Percentage  :", f"{res_a.report['reduction_percentage']}%")
     print("Depth Reduction       :", f"{res_a.report['before']['depth']} -> {res_a.report['after']['depth']}")
@@ -101,7 +102,8 @@ def run_demonstrations():
     for k, v in res_b.report["after"].items():
         print(f"  {k:22s}: {v}")
 
-    print("\nPasses Applied        :", res_b.report["passes_applied"])
+    print("\nRuntime Backend       :", res_b.report.get("backend", "unknown"))
+    print("Passes Applied        :", res_b.report["passes_applied"])
     print("Gates Removed         :", res_b.report["gates_removed"])
     print("Reduction Percentage  :", f"{res_b.report['reduction_percentage']}%")
     print("Depth Reduction       :", f"{res_b.report['before']['depth']} -> {res_b.report['after']['depth']}")
