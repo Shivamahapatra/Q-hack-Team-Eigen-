@@ -1,7 +1,7 @@
 # ==============================================================================
 # QC-C2-04: OpenQASM 2.0 / 3.0 <-> QniverseCircuit Converter + Diagram Renderer
 # PESU - C-DAC Quantum Hackathon 2026 | Team Eigen
-# Version: 3.0 (Jupyter-safe, OpenQASM Export + ASCII & Native Circuit Diagrams)
+# Version: 3.1 (Full QniverseCircuit Adapter, QSDK Codegen, OpenQASM & Diagram)
 # ==============================================================================
 
 import math
@@ -23,6 +23,8 @@ class QasmOp:
 def _safe_eval_angle(expr: str) -> float:
     # Safely evaluate angle expressions like "pi/2", "3*pi/4", "1.57"
     expr = expr.strip()
+    if not expr:
+        raise ValueError("Empty angle expression")
     expr = re.sub(r"\bpi\b", str(math.pi), expr)
     expr = expr.replace("π", str(math.pi))
     if not re.match(r"^[\d\.\s\+\-\*\/\(\)]+$", expr):
@@ -31,8 +33,8 @@ def _safe_eval_angle(expr: str) -> float:
 
 
 def _format_angle_qasm(val: float) -> str:
-    # Format common multiples of pi cleanly in OpenQASM output
-    for num in range(-8, 9):
+    # Format common multiples of pi cleanly in OpenQASM and QSDK output
+    for num in range(-16, 17):
         if num == 0:
             if abs(val) < 1e-9:
                 return "0"
@@ -88,6 +90,51 @@ def ops_to_openqasm(
         else:
             args = ", ".join(f"q[{q}]" for q in o.qubits)
             lines.append(f"{gname} {args};")
+
+    return "\n".join(lines) + "\n"
+
+
+def ops_to_qniverse_code(
+    ops: List[QasmOp],
+    num_qubits: int,
+    num_cbits: int
+) -> str:
+    # Generates executable Qniverse QSDK Python code equivalent to the parsed QASM
+    lines = [
+        "from qniverse.gates import *",
+        "from qniverse.QniverseCircuit import QniverseCircuit, QuantumRegister, ClassicalRegister",
+        "import numpy as np",
+        "",
+        "qc = QniverseCircuit()",
+    ]
+    if num_qubits > 0:
+        lines.append(f'q = QuantumRegister({num_qubits}, "q")')
+        lines.append("qc.add_register(q)")
+    if num_cbits > 0:
+        lines.append(f'c = ClassicalRegister({num_cbits}, "c")')
+        lines.append("qc.add_register(c)")
+    lines.append("")
+
+    alias_map = {"cnot": "cx", "toffoli": "ccx"}
+    for o in ops:
+        gname = alias_map.get(o.name.lower(), o.name.lower())
+        if gname == "measure":
+            lines.append(f"qc.add_gate(measure, q[{o.qubits[0]}], c[{o.cbits[0]}])")
+        elif gname == "barrier":
+            for pair in _decompose_wide_barrier(o.qubits):
+                q_args = ", ".join(f"q[{idx}]" for idx in pair)
+                lines.append(f"qc.add_gate(barrier, {q_args})")
+        elif gname == "reset":
+            lines.append(f"qc.add_gate(reset, q[{o.qubits[0]}])")
+        elif o.params:
+            p_args = ", ".join(
+                _format_angle_qasm(p).replace("pi", "np.pi") for p in o.params
+            )
+            q_args = ", ".join(f"q[{idx}]" for idx in o.qubits)
+            lines.append(f"qc.add_gate({gname}({p_args}), {q_args})")
+        else:
+            q_args = ", ".join(f"q[{idx}]" for idx in o.qubits)
+            lines.append(f"qc.add_gate({gname}, {q_args})")
 
     return "\n".join(lines) + "\n"
 
@@ -282,33 +329,37 @@ class QasmConverter:
     STANDARD_1Q_GATES = {
         "id", "x", "y", "z", "h", "s", "sdg", "t", "tdg", "sx", "sxdg"
     }
-    STANDARD_2Q_GATES = {"cx", "cnot", "cz", "swap", "ch"}
-    STANDARD_3Q_GATES = {"ccx", "toffoli"}
-    PARAM_GATES = {"rx", "ry", "rz", "p", "u1", "u2", "u3", "cp", "crz"}
+    STANDARD_2Q_GATES = {"cx", "cnot", "cz", "swap", "ch", "cy"}
+    STANDARD_3Q_GATES = {"ccx", "toffoli", "cswap"}
+    PARAM_GATES = {"rx", "ry", "rz", "p", "u1", "u2", "u3", "cp", "crz", "crx", "cry"}
 
-    ALL_KNOWN_GATES = (
-        STANDARD_1Q_GATES | STANDARD_2Q_GATES | STANDARD_3Q_GATES | PARAM_GATES
-    )
+    NON_PARAM_GATES = STANDARD_1Q_GATES | STANDARD_2Q_GATES | STANDARD_3Q_GATES
+    ALL_KNOWN_GATES = NON_PARAM_GATES | PARAM_GATES
 
     _GATE_QUBIT_COUNT = {
-        **{g: 1 for g in STANDARD_1Q_GATES | PARAM_GATES},
-        **{g: 2 for g in STANDARD_2Q_GATES},
-        "ccx": 3, "toffoli": 3,
-        "u2": 1, "u3": 1, "cp": 2, "crz": 2,
+        **{g: 1 for g in STANDARD_1Q_GATES | {"rx", "ry", "rz", "p", "u1", "u2", "u3"}},
+        **{g: 2 for g in STANDARD_2Q_GATES | {"cp", "crz", "crx", "cry"}},
+        **{g: 3 for g in STANDARD_3Q_GATES},
+    }
+
+    _GATE_PARAM_COUNT = {
+        "rx": 1, "ry": 1, "rz": 1, "p": 1, "u1": 1,
+        "u2": 2, "u3": 3,
+        "cp": 1, "crz": 1, "crx": 1, "cry": 1,
     }
 
     def _detect_version(self, source: str) -> str:
         for line in source.splitlines():
             line = line.strip()
             if line.startswith("OPENQASM"):
-                m = re.search(r"OPENQASM\s+([\d]+\.[\d]+)", line)
+                m = re.search(r"OPENQASM\s+([\d]+(?:\.[\d]+)?)", line, re.IGNORECASE)
                 if m:
                     ver = m.group(1)
                     if ver.startswith("2"):
                         return "2.0"
                     if ver.startswith("3"):
                         return "3.0"
-            if line.startswith("qubit[") or line.startswith("bit["):
+            if re.match(r"^(?:qubit|bit)\s*\[", line):
                 return "3.0"
         return "2.0"
 
@@ -335,6 +386,8 @@ class QasmConverter:
             qregs[m.group(2)] = int(m.group(1))
         for m in re.finditer(r"(?<!\w)bit\s*\[\s*(\d+)\s*\]\s+(\w+)\s*;", source):
             cregs[m.group(2)] = int(m.group(1))
+        if not qregs and not cregs:
+            return self._parse_registers_v2(source)
         return qregs, cregs
 
     def _resolve_qubit(self, reg_name: str, idx: int,
@@ -368,15 +421,33 @@ class QasmConverter:
         return offset_map
 
     def _parse_gate_args(self, args_str: str, qregs: Dict[str, int],
-                         offset_map: Dict[str, int]) -> Tuple[int, ...]:
+                         offset_map: Dict[str, int], allow_whole_reg: bool = False) -> Tuple[int, ...]:
         qubits = []
         for token in args_str.split(","):
             token = token.strip()
-            m = re.match(r"(\w+)\[(\d+)\]", token)
-            if not m:
+            m = re.match(r"^(\w+)\[(\d+)\]$", token)
+            if m:
+                qubits.append(self._resolve_qubit(m.group(1), int(m.group(2)), qregs, offset_map))
+            elif allow_whole_reg and token in qregs:
+                base = offset_map[token]
+                qubits.extend(base + i for i in range(qregs[token]))
+            else:
                 raise ValueError(f"Cannot parse qubit argument: '{token}'")
-            qubits.append(self._resolve_qubit(m.group(1), int(m.group(2)), qregs, offset_map))
+        if len(set(qubits)) != len(qubits):
+            raise ValueError(f"Duplicate qubit operands in statement arguments: '{args_str}'")
         return tuple(qubits)
+
+    def _validate_gate_arity(self, gate_name: str, q_args: Tuple[int, ...], params: Tuple[float, ...] = ()):
+        expected_q = self._GATE_QUBIT_COUNT.get(gate_name)
+        if expected_q is not None and len(q_args) != expected_q:
+            raise ValueError(
+                f"Gate '{gate_name}' requires {expected_q} qubit(s), but got {len(q_args)}"
+            )
+        expected_p = self._GATE_PARAM_COUNT.get(gate_name, 0)
+        if len(params) != expected_p:
+            raise ValueError(
+                f"Gate '{gate_name}' requires {expected_p} parameter(s), but got {len(params)}"
+            )
 
     def _parse_statements(self, source: str, version: str,
                            qregs: Dict[str, int], cregs: Dict[str, int],
@@ -388,111 +459,149 @@ class QasmConverter:
         line_no = 0
 
         skip_patterns = [
-            r"^OPENQASM\s+[\d\.]+\s*;?",
-            r"^include\s+\"[^\"]+\"\s*;",
-            r"^qreg\s+\w+\s*\[\d+\]\s*;",
-            r"^creg\s+\w+\s*\[\d+\]\s*;",
-            r"^\bqubit\b\s*\[\d+\]\s+\w+\s*;",
-            r"^(?<!\w)bit\s*\[\d+\]\s+\w+\s*;",
+            r"^OPENQASM\s+[\d\.]+\s*;?$",
+            r"^include\s+\"[^\"]+\"\s*;$",
+            r"^qreg\s+\w+\s*\[\d+\]\s*;$",
+            r"^creg\s+\w+\s*\[\d+\]\s*;$",
+            r"^\bqubit\b\s*\[\d+\]\s+\w+\s*;$",
+            r"^(?<!\w)bit\s*\[\d+\]\s+\w+\s*;$",
         ]
 
         for raw_line in source.splitlines():
             line_no += 1
-            stmt = raw_line.strip().rstrip(";")
-            if not stmt:
-                continue
-            if any(re.match(p, stmt + ";") for p in skip_patterns):
+            stripped_line = raw_line.strip()
+            if not stripped_line:
                 continue
 
-            # Barrier
-            m = re.match(r"barrier\s+(.+)", stmt)
-            if m:
-                try:
-                    q_args = self._parse_gate_args(m.group(1), qregs, offset_map)
-                    ops.append(QasmOp("barrier", q_args, line_no=line_no))
-                except ValueError as e:
-                    unsupported.append({"line": line_no, "statement": stmt, "reason": str(e)})
-                continue
+            # Keep control-flow lines with braces intact so they report as a single unsupported statement
+            if "{" in stripped_line or "}" in stripped_line:
+                sub_statements = [stripped_line.rstrip(";").strip()]
+            else:
+                sub_statements = [s.strip() for s in stripped_line.split(";") if s.strip()]
 
-            # Reset
-            m = re.match(r"reset\s+(\w+)\[(\d+)\]", stmt)
-            if m:
-                try:
-                    q = self._resolve_qubit(m.group(1), int(m.group(2)), qregs, offset_map)
-                    ops.append(QasmOp("reset", (q,), line_no=line_no))
-                except ValueError as e:
-                    unsupported.append({"line": line_no, "statement": stmt, "reason": str(e)})
-                continue
+            for stmt in sub_statements:
+                if any(re.match(p, stmt + ";", re.IGNORECASE) for p in skip_patterns):
+                    continue
 
-            # Measure v2: measure q[i] -> c[j]
-            m = re.match(r"measure\s+(\w+)\[(\d+)\]\s*->\s*(\w+)\[(\d+)\]", stmt)
-            if m:
-                try:
-                    q = self._resolve_qubit(m.group(1), int(m.group(2)), qregs, offset_map)
-                    c = self._resolve_cbit(m.group(3), int(m.group(4)), cregs, coffset_map)
-                    ops.append(QasmOp("measure", (q,), (c,), line_no=line_no))
-                except ValueError as e:
-                    unsupported.append({"line": line_no, "statement": stmt, "reason": str(e)})
-                continue
-
-            # Measure v3: c[j] = measure q[i]
-            m = re.match(r"(\w+)\[(\d+)\]\s*=\s*measure\s+(\w+)\[(\d+)\]", stmt)
-            if m:
-                try:
-                    c = self._resolve_cbit(m.group(1), int(m.group(2)), cregs, coffset_map)
-                    q = self._resolve_qubit(m.group(3), int(m.group(4)), qregs, offset_map)
-                    ops.append(QasmOp("measure", (q,), (c,), line_no=line_no))
-                except ValueError as e:
-                    unsupported.append({"line": line_no, "statement": stmt, "reason": str(e)})
-                continue
-
-            # Parameterized gate: rx(theta) q[i]
-            m = re.match(r"(\w+)\(([^)]+)\)\s+(.+)", stmt)
-            if m:
-                gate_name = m.group(1).lower()
-                param_str = m.group(2)
-                args_str = m.group(3)
-                if gate_name in self.ALL_KNOWN_GATES or gate_name in self.PARAM_GATES:
+                # Barrier (supports indexed q[0], q[1] or whole register barrier q)
+                m = re.match(r"^barrier\s+(.+)$", stmt)
+                if m:
                     try:
-                        params = tuple(_safe_eval_angle(p) for p in param_str.split(","))
-                        q_args = self._parse_gate_args(args_str, qregs, offset_map)
-                        ops.append(QasmOp(gate_name, q_args, params=params, line_no=line_no))
+                        q_args = self._parse_gate_args(m.group(1), qregs, offset_map, allow_whole_reg=True)
+                        ops.append(QasmOp("barrier", q_args, line_no=line_no))
                     except ValueError as e:
                         unsupported.append({"line": line_no, "statement": stmt, "reason": str(e)})
-                else:
+                    continue
+
+                # Reset
+                m = re.match(r"^reset\s+(\w+)\[(\d+)\]$", stmt)
+                if m:
+                    try:
+                        q = self._resolve_qubit(m.group(1), int(m.group(2)), qregs, offset_map)
+                        ops.append(QasmOp("reset", (q,), line_no=line_no))
+                    except ValueError as e:
+                        unsupported.append({"line": line_no, "statement": stmt, "reason": str(e)})
+                    continue
+
+                # Measure v2: measure q[i] -> c[j] (or whole-register measure q -> c)
+                m = re.match(r"^measure\s+(\w+)(?:\[(\d+)\])?\s*->\s*(\w+)(?:\[(\d+)\])?$", stmt)
+                if m:
+                    try:
+                        q_reg, q_idx, c_reg, c_idx = m.group(1), m.group(2), m.group(3), m.group(4)
+                        if q_idx is not None and c_idx is not None:
+                            q = self._resolve_qubit(q_reg, int(q_idx), qregs, offset_map)
+                            c = self._resolve_cbit(c_reg, int(c_idx), cregs, coffset_map)
+                            ops.append(QasmOp("measure", (q,), (c,), line_no=line_no))
+                        elif q_idx is None and c_idx is None and q_reg in qregs and c_reg in cregs:
+                            if qregs[q_reg] != cregs[c_reg]:
+                                raise ValueError(f"Register size mismatch in measure {q_reg} -> {c_reg}")
+                            for idx in range(qregs[q_reg]):
+                                q = self._resolve_qubit(q_reg, idx, qregs, offset_map)
+                                c = self._resolve_cbit(c_reg, idx, cregs, coffset_map)
+                                ops.append(QasmOp("measure", (q,), (c,), line_no=line_no))
+                        else:
+                            raise ValueError(f"Invalid measure syntax: '{stmt}'")
+                    except ValueError as e:
+                        unsupported.append({"line": line_no, "statement": stmt, "reason": str(e)})
+                    continue
+
+                # Measure v3: c[j] = measure q[i] (or whole-register c = measure q)
+                m = re.match(r"^(\w+)(?:\[(\d+)\])?\s*=\s*measure\s+(\w+)(?:\[(\d+)\])?$", stmt)
+                if m:
+                    try:
+                        c_reg, c_idx, q_reg, q_idx = m.group(1), m.group(2), m.group(3), m.group(4)
+                        if q_idx is not None and c_idx is not None:
+                            c = self._resolve_cbit(c_reg, int(c_idx), cregs, coffset_map)
+                            q = self._resolve_qubit(q_reg, int(q_idx), qregs, offset_map)
+                            ops.append(QasmOp("measure", (q,), (c,), line_no=line_no))
+                        elif q_idx is None and c_idx is None and q_reg in qregs and c_reg in cregs:
+                            if qregs[q_reg] != cregs[c_reg]:
+                                raise ValueError(f"Register size mismatch in {c_reg} = measure {q_reg}")
+                            for idx in range(qregs[q_reg]):
+                                c = self._resolve_cbit(c_reg, idx, cregs, coffset_map)
+                                q = self._resolve_qubit(q_reg, idx, qregs, offset_map)
+                                ops.append(QasmOp("measure", (q,), (c,), line_no=line_no))
+                        else:
+                            raise ValueError(f"Invalid OpenQASM 3.0 measure syntax: '{stmt}'")
+                    except ValueError as e:
+                        unsupported.append({"line": line_no, "statement": stmt, "reason": str(e)})
+                    continue
+
+                # Parameterized gate: rx(theta) q[i]
+                m = re.match(r"^(\w+)\(([^)]*)\)\s+(.+)$", stmt)
+                if m:
+                    gate_name = m.group(1).lower()
+                    param_str = m.group(2)
+                    args_str = m.group(3)
+                    if gate_name in self.PARAM_GATES:
+                        try:
+                            params = tuple(_safe_eval_angle(p) for p in param_str.split(","))
+                            q_args = self._parse_gate_args(args_str, qregs, offset_map)
+                            self._validate_gate_arity(gate_name, q_args, params)
+                            ops.append(QasmOp(gate_name, q_args, params=params, line_no=line_no))
+                        except ValueError as e:
+                            unsupported.append({"line": line_no, "statement": stmt, "reason": str(e)})
+                    else:
+                        unsupported.append({
+                            "line": line_no,
+                            "statement": stmt,
+                            "reason": f"Unknown or non-parameterized gate '{gate_name}'"
+                        })
+                    continue
+
+                # Standard non-parameterized gate: h q[0] or cx q[0], q[1]
+                m = re.match(r"^(\w+)\s+(.+)$", stmt)
+                if m:
+                    gate_name = m.group(1).lower()
+                    args_str = m.group(2)
+                    if gate_name in self.NON_PARAM_GATES:
+                        try:
+                            q_args = self._parse_gate_args(args_str, qregs, offset_map)
+                            self._validate_gate_arity(gate_name, q_args, ())
+                            ops.append(QasmOp(gate_name, q_args, line_no=line_no))
+                        except ValueError as e:
+                            unsupported.append({"line": line_no, "statement": stmt, "reason": str(e)})
+                    elif gate_name in self.PARAM_GATES:
+                        unsupported.append({
+                            "line": line_no,
+                            "statement": stmt,
+                            "reason": f"Parameterized gate '{gate_name}' missing required angle parameter(s)"
+                        })
+                    else:
+                        unsupported.append({
+                            "line": line_no,
+                            "statement": stmt,
+                            "reason": f"Unknown or unsupported gate/statement '{gate_name}'"
+                        })
+                    continue
+
+                # Anything else not matched
+                if stmt:
                     unsupported.append({
                         "line": line_no,
                         "statement": stmt,
-                        "reason": f"Unknown parameterized gate '{gate_name}'"
+                        "reason": "Unrecognized statement"
                     })
-                continue
-
-            # Standard gate: h q[0] or cx q[0], q[1]
-            m = re.match(r"(\w+)\s+(.+)", stmt)
-            if m:
-                gate_name = m.group(1).lower()
-                args_str = m.group(2)
-                if gate_name in self.ALL_KNOWN_GATES:
-                    try:
-                        q_args = self._parse_gate_args(args_str, qregs, offset_map)
-                        ops.append(QasmOp(gate_name, q_args, line_no=line_no))
-                    except ValueError as e:
-                        unsupported.append({"line": line_no, "statement": stmt, "reason": str(e)})
-                else:
-                    unsupported.append({
-                        "line": line_no,
-                        "statement": stmt,
-                        "reason": f"Unknown or unsupported gate/statement '{gate_name}'"
-                    })
-                continue
-
-            # Anything else not matched
-            if stmt:
-                unsupported.append({
-                    "line": line_no,
-                    "statement": stmt,
-                    "reason": "Unrecognized statement"
-                })
 
         return ops, warnings, unsupported
 
@@ -529,7 +638,7 @@ class QasmConverter:
 
 # ------------------------------------------------ QSDK Circuit Builder
 def build_qniverse_circuit(ops: List[QasmOp], num_qubits: int, num_cbits: int):
-    # Builds QniverseCircuit; falls back to MockQniverseCircuit if SDK unavailable
+    # Builds QniverseCircuit; falls back to a QSDK-compatible MockQniverseCircuit if SDK unavailable
     try:
         from qniverse.QniverseCircuit import QniverseCircuit, QuantumRegister, ClassicalRegister
         import qniverse.gates as G
@@ -538,17 +647,73 @@ def build_qniverse_circuit(ops: List[QasmOp], num_qubits: int, num_cbits: int):
         has_real_sdk = False
 
     if not has_real_sdk:
+        class _MockReg:
+            def __init__(self, kind: str, size: int, name: str):
+                self.kind = kind
+                self.size = size
+                self.name = name
+
+            def __getitem__(self, idx: int):
+                wkind = "Qubit" if self.kind == "Quantum" else "Clbit"
+                return f"{wkind}({self.kind}Register({self.size}, '{self.name}'), {idx})"
+
+            def __repr__(self):
+                return f"{self.kind}Register({self.size}, '{self.name}')"
+
+        class _MockGate:
+            def __init__(self, name: str, params: Tuple[float, ...] = ()):
+                self.name = name.upper() if name != "measure" else "Measure"
+                self.params = params
+
+            def __repr__(self):
+                if self.params:
+                    return f"Gate({self.name}, params={self.params})"
+                return f"Gate({self.name})"
+
         class MockQniverseCircuit:
-            def __init__(self, ops_list, n_q, n_c):
+            def __init__(self, ops_list: List[QasmOp], n_q: int, n_c: int):
                 self._ops = list(ops_list)
                 self.num_qubits = n_q
                 self.num_clbits = n_c
+                self.registers = []
+                self.qubit_registers = {}
+                self.clbit_registers = {}
+                self.operations = []
+
+                q_reg = _MockReg("Quantum", n_q, "q") if n_q > 0 else None
+                c_reg = _MockReg("Classical", n_c, "c") if n_c > 0 else None
+                if q_reg:
+                    self.registers.append(q_reg)
+                    self.qubit_registers["q"] = q_reg
+                if c_reg:
+                    self.registers.append(c_reg)
+                    self.clbit_registers["c"] = c_reg
+
+                alias_map = {"cnot": "cx", "toffoli": "ccx"}
+                for o in self._ops:
+                    gname = alias_map.get(o.name.lower(), o.name.lower())
+                    if gname == "measure" and q_reg and c_reg:
+                        wires = (q_reg[o.qubits[0]], c_reg[o.cbits[0]])
+                        self.operations.append((_MockGate("measure"), wires))
+                    elif gname == "barrier" and q_reg:
+                        for pair in _decompose_wide_barrier(o.qubits):
+                            wires = tuple(q_reg[idx] for idx in pair)
+                            self.operations.append((_MockGate("barrier"), wires))
+                    elif q_reg:
+                        wires = tuple(q_reg[idx] for idx in o.qubits)
+                        self.operations.append((_MockGate(gname, o.params), wires))
 
             def qasm(self, version: str = "2.0") -> str:
                 return ops_to_openqasm(self._ops, self.num_qubits, self.num_clbits, version=version)
 
             def to_qasm(self, version: str = "2.0") -> str:
                 return ops_to_openqasm(self._ops, self.num_qubits, self.num_clbits, version=version)
+
+            def to_qniverse_code(self) -> str:
+                return ops_to_qniverse_code(self._ops, self.num_qubits, self.num_clbits)
+
+            def list_gates(self) -> List[str]:
+                return [getattr(op[0], "name", str(op[0])) for op in self.operations]
 
             def draw(self, filename: Optional[str] = None) -> str:
                 return draw_circuit_text(self._ops, self.num_qubits, print_output=True)
@@ -557,14 +722,16 @@ def build_qniverse_circuit(ops: List[QasmOp], num_qubits: int, num_cbits: int):
                 return draw_circuit_text(self._ops, self.num_qubits, print_output=print_output)
 
             def __repr__(self):
-                return f"<MockQniverseCircuit qubits={self.num_qubits} clbits={self.num_clbits} ops={len(self._ops)}>"
+                return f"<QniverseCircuit (compatible) qubits={self.num_qubits} clbits={self.num_clbits} operations={len(self.operations)}>"
 
         return MockQniverseCircuit(ops, num_qubits, num_cbits)
 
     # ---- Official Qniverse SDK Construction ----
     qc = QniverseCircuit()
-    q = QuantumRegister(num_qubits, "q")
-    qc.add_register(q)
+    q = None
+    if num_qubits > 0:
+        q = QuantumRegister(num_qubits, "q")
+        qc.add_register(q)
     c = None
     if num_cbits > 0:
         c = ClassicalRegister(num_cbits, "c")
@@ -628,10 +795,13 @@ def build_qniverse_circuit(ops: List[QasmOp], num_qubits: int, num_cbits: int):
                 gate_obj = gate_val
             qc.add_gate(gate_obj, *(q[idx] for idx in o.qubits))
 
-    # Attach helper methods on real QniverseCircuit instance so .qasm(), .to_qasm(), and .draw_text() always work
+    # Attach helper methods on real QniverseCircuit instance so .qasm(), .to_qniverse_code(), .list_gates(), and .draw_text() always work
     qc._ops = list(ops)
     qc.qasm = lambda version="2.0": ops_to_openqasm(ops, num_qubits, num_cbits, version=version)
     qc.to_qasm = lambda version="2.0": ops_to_openqasm(ops, num_qubits, num_cbits, version=version)
+    qc.to_qniverse_code = lambda: ops_to_qniverse_code(ops, num_qubits, num_cbits)
+    if not hasattr(qc, "list_gates"):
+        qc.list_gates = lambda: [getattr(op[0], "name", str(op[0])) for op in getattr(qc, "operations", [])]
     qc.draw_text = lambda print_output=True: draw_circuit_text(ops, num_qubits, print_output=print_output)
 
     return qc
@@ -663,6 +833,7 @@ def convert_qasm_to_qniverse(qasm_str: str, version: Optional[str] = None) -> Tu
         return None, report
 
     circuit = build_qniverse_circuit(ops, meta["total_qubits"], meta["total_cbits"])
+    report["qniverse_code"] = ops_to_qniverse_code(ops, meta["total_qubits"], meta["total_cbits"])
     report["openqasm_2_0"] = ops_to_openqasm(ops, meta["total_qubits"], meta["total_cbits"], version="2.0")
     report["openqasm_3_0"] = ops_to_openqasm(ops, meta["total_qubits"], meta["total_cbits"], version="3.0")
     report["diagram"] = draw_circuit_text(ops, meta["total_qubits"], print_output=False)
@@ -677,6 +848,7 @@ _Y = np.array([[0, -1j], [1j, 0]])
 _Z = np.diag([1, -1])
 _S = np.diag([1, 1j])
 _T = np.diag([1, np.exp(1j * np.pi / 4)])
+_SX = np.array([[1 + 1j, 1 - 1j], [1 - 1j, 1 + 1j]]) / 2.0
 
 
 def _matrix_for_gate(name: str, params: Tuple[float, ...]) -> np.ndarray:
@@ -689,6 +861,8 @@ def _matrix_for_gate(name: str, params: Tuple[float, ...]) -> np.ndarray:
     if name == "sdg": return _S.conj().T
     if name == "t": return _T
     if name == "tdg": return _T.conj().T
+    if name == "sx": return _SX
+    if name == "sxdg": return _SX.conj().T
     if name == "rx":
         theta = params[0]
         return np.array([[np.cos(theta / 2), -1j * np.sin(theta / 2)],
@@ -700,6 +874,18 @@ def _matrix_for_gate(name: str, params: Tuple[float, ...]) -> np.ndarray:
     if name in ("rz", "p", "u1"):
         phi = params[0]
         return np.diag([np.exp(-1j * phi / 2), np.exp(1j * phi / 2)])
+    if name == "u2":
+        phi, lam = params[0], params[1]
+        return np.array([
+            [1.0, -np.exp(1j * lam)],
+            [np.exp(1j * phi), np.exp(1j * (phi + lam))]
+        ]) / np.sqrt(2.0)
+    if name == "u3":
+        theta, phi, lam = params[0], params[1], params[2]
+        return np.array([
+            [np.cos(theta / 2), -np.exp(1j * lam) * np.sin(theta / 2)],
+            [np.exp(1j * phi) * np.sin(theta / 2), np.exp(1j * (phi + lam)) * np.cos(theta / 2)]
+        ])
     raise ValueError(f"No verification matrix for '{name}'")
 
 
@@ -708,32 +894,56 @@ def compute_qasm_unitary(ops: List[QasmOp], n: int) -> np.ndarray:
     dim = 2 ** n
     u = np.eye(dim, dtype=complex)
     for o in ops:
-        if o.name in {"measure", "reset", "barrier"}:
+        gname = o.name.lower()
+        if gname in {"measure", "reset", "barrier"}:
             continue
         m = np.zeros((dim, dim), dtype=complex)
         for col in range(dim):
             bits = [(col >> (n - 1 - k)) & 1 for k in range(n)]
             if len(o.qubits) == 1:
-                gmat = _matrix_for_gate(o.name, o.params)
+                gmat = _matrix_for_gate(gname, o.params)
                 q = o.qubits[0]
                 for b in (0, 1):
                     amp = gmat[b, bits[q]]
                     if amp != 0:
                         nb = bits.copy(); nb[q] = b
                         m[int("".join(map(str, nb)), 2), col] += amp
-            elif o.name in ("cx", "cnot"):
+            elif gname in ("cx", "cnot"):
                 nb = bits.copy()
                 if bits[o.qubits[0]]: nb[o.qubits[1]] ^= 1
                 m[int("".join(map(str, nb)), 2), col] += 1
-            elif o.name == "cz":
+            elif gname == "cz":
                 phase = -1 if (bits[o.qubits[0]] and bits[o.qubits[1]]) else 1
                 m[col, col] += phase
-            elif o.name == "swap":
+            elif gname == "swap":
                 nb = bits.copy()
                 a, b = o.qubits; nb[a], nb[b] = bits[b], bits[a]
                 m[int("".join(map(str, nb)), 2), col] += 1
+            elif gname in ("ch", "cy", "crx", "cry", "crz", "cp"):
+                c_q, t_q = o.qubits
+                if not bits[c_q]:
+                    m[col, col] += 1
+                else:
+                    sub_name = "p" if gname == "cp" else gname[1:]
+                    gmat = _matrix_for_gate(sub_name, o.params)
+                    for b in (0, 1):
+                        amp = gmat[b, bits[t_q]]
+                        if amp != 0:
+                            nb = bits.copy(); nb[t_q] = b
+                            m[int("".join(map(str, nb)), 2), col] += amp
+            elif gname in ("ccx", "toffoli"):
+                nb = bits.copy()
+                if bits[o.qubits[0]] and bits[o.qubits[1]]:
+                    nb[o.qubits[2]] ^= 1
+                m[int("".join(map(str, nb)), 2), col] += 1
+            elif gname == "cswap":
+                nb = bits.copy()
+                if bits[o.qubits[0]]:
+                    a, b = o.qubits[1], o.qubits[2]
+                    nb[a], nb[b] = bits[b], bits[a]
+                m[int("".join(map(str, nb)), 2), col] += 1
             else:
-                continue
+                raise ValueError(f"Unsupported gate in unitary calculation: '{gname}'")
         u = m @ u
     return u
 
@@ -751,7 +961,7 @@ def equal_up_to_phase(a: np.ndarray, b: np.ndarray, tol: float = 1e-8) -> bool:
 def run_all_tests():
     print("--- Running QC-C2-04 Converter Test Suite ---")
 
-    # Test 1: OpenQASM 2.0 Bell State
+    # Test 1: OpenQASM 2.0 Bell State -> QniverseCircuit
     qasm_2 = (
         "OPENQASM 2.0;\n"
         'include "qelib1.inc";\n'
@@ -769,11 +979,14 @@ def run_all_tests():
     assert rep["mapped_operations"]["h"] == 1
     assert rep["mapped_operations"]["cx"] == 1
     assert circ is not None
+    assert hasattr(circ, "operations") and len(circ.operations) == 4
+    assert hasattr(circ, "registers") and len(circ.registers) == 2
+    assert "qc = QniverseCircuit()" in rep["qniverse_code"]
     assert "OPENQASM 2.0;" in rep["openqasm_2_0"]
     assert "q0: --" in rep["diagram"]
-    print("[PASS] Test 1: OpenQASM 2.0 Bell State conversion verified.")
+    print("[PASS] Test 1: OpenQASM 2.0 -> QniverseCircuit & QSDK code verified.")
 
-    # Test 2: OpenQASM 3.0 Modern Syntax
+    # Test 2: OpenQASM 3.0 Modern Syntax -> QniverseCircuit
     qasm_3 = (
         "OPENQASM 3.0;\n"
         "qubit[3] q;\n"
@@ -789,7 +1002,8 @@ def run_all_tests():
     assert rep3["qubits"] == 3 and rep3["classical_bits"] == 3
     assert rep3["mapped_operations"]["swap"] == 1
     assert circ3 is not None
-    print("[PASS] Test 2: OpenQASM 3.0 Modern Syntax conversion verified.")
+    assert len(circ3.operations) == 4
+    print("[PASS] Test 2: OpenQASM 3.0 Modern Syntax -> QniverseCircuit verified.")
 
     # Test 3: Parameterized Gates & Angle Expressions (pi/2, pi)
     qasm_param = (
@@ -803,9 +1017,10 @@ def run_all_tests():
     assert rep_p["mapped_operations"]["rx"] == 1
     assert rep_p["mapped_operations"]["rz"] == 1
     assert "rx(pi/2) q[0];" in rep_p["openqasm_2_0"]
+    assert "qc.add_gate(rx(np.pi/2), q[0])" in rep_p["qniverse_code"]
     print("[PASS] Test 3: Parameterized rotations with pi math verified.")
 
-    # Test 4: Diagnostic Safety & Unsupported Gate Rejection
+    # Test 4: Diagnostic Safety & Unsupported Gate / Arity Rejection
     qasm_bad = (
         "OPENQASM 2.0;\n"
         "qreg q[2];\n"
@@ -819,7 +1034,7 @@ def run_all_tests():
     assert rep_bad["unsupported_statements"][0]["statement"] == "magic_gate q[0]"
     print("[PASS] Test 4: Explicit diagnostics and rejection of unsupported features verified.")
 
-    # Test 5: Semantic Unitary Equivalence Verification (Bell state matrix)
+    # Test 5: Semantic Unitary Equivalence Verification (Bell state matrix + roundtrip)
     bell_qasm = (
         "OPENQASM 2.0;\n"
         "qreg q[2];\n"
@@ -836,7 +1051,13 @@ def run_all_tests():
         [1, 0, -1, 0]
     ]) / np.sqrt(2)
     assert equal_up_to_phase(u_computed, u_expected), "Test 5 unitary mismatch"
-    print("[PASS] Test 5: Semantic unitary equivalence verified up to global phase.")
+
+    # Also verify round-trip QniverseCircuit -> OpenQASM -> Unitary equivalence
+    bell_circ, _ = convert_qasm_to_qniverse(bell_qasm)
+    rt_ops, _ = conv.parse(qniverse_to_openqasm(bell_circ, version="2.0"))
+    u_rt = compute_qasm_unitary(rt_ops, 2)
+    assert equal_up_to_phase(u_computed, u_rt), "Round-trip unitary mismatch"
+    print("[PASS] Test 5: Semantic & round-trip unitary equivalence verified up to global phase.")
 
     print("\n--- ALL QC-C2-04 CONVERTER TESTS PASSED SUCCESSFULLY! ---")
 
@@ -862,20 +1083,28 @@ if __name__ == "__main__":
     print(sample.strip())
 
     print("\n========================================================")
-    print("2. CONVERTED OPENQASM 2.0 OUTPUT (circ.qasm())")
+    print("2. CONVERTED QNIVERSE CIRCUIT & QSDK PYTHON CODE")
+    print("========================================================")
+    print(f"Circuit Object : {circ}")
+    print(f"Registers      : {circ.registers}")
+    print(f"Operations ({len(circ.operations)}) : {circ.operations}")
+    print("\n--- Equivalent Qniverse QSDK Code ---")
+    print(circ.to_qniverse_code().strip())
+
+    print("\n========================================================")
+    print("3. EXPORTED OPENQASM 2.0 (circ.qasm('2.0'))")
     print("========================================================")
     print(circ.qasm("2.0").strip())
 
     print("\n========================================================")
-    print("3. CONVERTED OPENQASM 3.0 OUTPUT (circ.qasm('3.0'))")
+    print("4. EXPORTED OPENQASM 3.0 (circ.qasm('3.0'))")
     print("========================================================")
     print(circ.qasm("3.0").strip())
 
     print("\n========================================================")
-    print("4. CIRCUIT DIAGRAM (ASCII + QSDK Draw)")
+    print("5. CIRCUIT DIAGRAM (ASCII + QSDK Draw)")
     print("========================================================")
     draw_circuit_text(circ)
-    # Also invoke native QSDK draw() if running on live Qniverse
     if hasattr(circ, "draw") and type(circ).__name__ != "MockQniverseCircuit":
         try:
             circ.draw()
@@ -884,7 +1113,10 @@ if __name__ == "__main__":
 
     import json
     print("\n========================================================")
-    print("5. CONVERSION DIAGNOSTIC REPORT")
+    print("6. CONVERSION DIAGNOSTIC REPORT")
     print("========================================================")
-    summary_report = {k: v for k, v in report.items() if k not in ("openqasm_2_0", "openqasm_3_0", "diagram")}
+    summary_report = {
+        k: v for k, v in report.items()
+        if k not in ("qniverse_code", "openqasm_2_0", "openqasm_3_0", "diagram")
+    }
     print(json.dumps(summary_report, indent=2))
