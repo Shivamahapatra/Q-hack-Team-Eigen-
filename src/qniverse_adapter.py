@@ -13,7 +13,7 @@ NOT YET VERIFIED (check in the JupyterLab, see TODO markers):
   * where rotation angles (rx, rz, u3 ...) are stored on a Gate
 """
 import re
-from c1_01_profiler import Op
+from c1_01_final import Op
 
 _REG = re.compile(r"(Qubit|Clbit)\((?:Quantum|Classical)Register\((\d+), '([^']+)'\), (\d+)\)")
 PARAMETERISED = {"rx", "ry", "rz", "p", "u1", "u2", "u3",

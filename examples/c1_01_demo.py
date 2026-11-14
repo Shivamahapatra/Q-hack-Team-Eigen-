@@ -10,7 +10,7 @@ import sys
 # Ensure src is accessible
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from c1_01_profiler import analyze
+from c1_01_final import analyze
 
 
 def run_demo():
@@ -47,7 +47,7 @@ measure q[0] -> c[0];
     # Save to results/c1_01_sample_report.json
     results_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "results"))
     os.makedirs(results_dir, exist_ok=True)
-    report_path = os.path.join(results_dir, "c1_01_sample_report.json")
+    report_path = os.path.join(results_dir, "c1_01_report.json")
 
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)

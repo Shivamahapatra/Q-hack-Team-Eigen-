@@ -5,7 +5,7 @@ import os
 # Add src to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from c1_01_profiler import (
+from c1_01_final import (
     Op, profile, decompose, analyze, from_qniverse, to_qniverse,
     equal_up_to_phase, unitary
 )
