@@ -1,0 +1,59 @@
+input 
+OPENQASM 2.0;
+include "qelib1.inc";
+qreg q[3];
+creg c[3];
+id q[0];
+h q[0];
+h q[0];
+x q[1];
+y q[2];
+x q[1];
+cx q[0],q[2];
+cx q[0],q[2];
+z q[0];
+barrier q[0],q[1],q[2];
+z q[0];
+h q[2];
+cx q[1],q[2];
+t q[2];
+measure q[0] -> c[0];
+measure q[1] -> c[1];
+measure q[2] -> c[2];
+
+output
+OK qniverse
+gates: 13 -> 6
+depth: 10 -> 5
+by type: {'id': 1, 'h': 3, 'x': 2, 'y': 1, 'cx': 3, 'z': 2, 't': 1} -> {'y': 1, 'z': 2, 'h': 1, 'cx': 1, 't': 1}
+passes: ['identity_removal', 'self_inverse_cancellation']
+OPENQASM 2.0;
+include "qelib1.inc";
+
+qreg q[3];
+creg c[3];
+
+y q[2];
+z q[0];
+barrier q[0], q[1];
+barrier q[1], q[2];
+barrier q[0], q[1];
+z q[0];
+h q[2];
+cx q[1], q[2];
+t q[2];
+measure q[0] -> c[0];
+measure q[1] -> c[1];
+measure q[2] -> c[2];
+
+=== BEFORE ===
+q0: ---[ID]--[H]--[H]---@----@---[Z]--:--[Z]--[M]-------------   => c0
+q1: ---[X]---[X]--------|----|--------:--------@---[M]--------   => c1
+q2: ---[Y]-------------(+)--(+)-------:--[H]--(+)--[T]--[M]---   => c2
+legend: @ control, (+) target, x swap, : barrier, | connector, [M] measure
+
+=== AFTER ===
+q0: ---[Z]--:------:---[Z]--[M]--------   => c0
+q1: --------:--:---:----@---[M]--------   => c1
+q2: ---[Y]-----:--[H]--(+)--[T]--[M]---   => c2
+legend: @ control, (+) target, x swap, : barrier, | connector, [M] measure
