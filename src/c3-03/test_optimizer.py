@@ -324,6 +324,22 @@ class TestQC0303Optimizer(unittest.TestCase):
             res = optimize(ops)
             self.assertEqual(res.report["backend"], "qniverse")
 
+    # --------------------------------------------- PRIORITY 3: CONDITIONAL GATES TESTS
+    def test_priority3_conditional_circuit_skipped_and_unchanged(self):
+        """P3: Circuits with has_conditional=True are returned unchanged with a warning."""
+        mock_qc = _make_mock_circuit(2, 1, [Op("x", (0,)), Op("x", (0,))])
+        mock_qc.has_conditional = True
+
+        res = optimize(mock_qc)
+
+        # Circuit returned unchanged without modifying or inspecting operations
+        self.assertIs(res.circuit, mock_qc)
+        self.assertEqual(res.report["status"], "optimization skipped: conditional gates present")
+        self.assertIn("optimization skipped: conditional gates present", res.report["warnings"])
+        self.assertEqual(res.report["gates_removed"], 0)
+        self.assertEqual(res.report["reduction_percentage"], 0.0)
+        self.assertEqual(res.report["passes_applied"], [])
+
     # ------------------------------------------------ NON-MUTATION TESTS
     def test_original_circuit_immutability(self):
         """Safety: Original circuit object and operations remain 100% untouched."""

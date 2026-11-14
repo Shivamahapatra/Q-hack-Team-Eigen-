@@ -759,6 +759,33 @@ def optimize(
         selected_passes = list(enabled_passes)
 
     warnings: List[str] = []
+
+    # Priority 3: Check for conditional gates
+    if getattr(qc, "has_conditional", False):
+        skip_msg = "optimization skipped: conditional gates present"
+        warnings.append(skip_msg)
+        backend = getattr(qc, "_backend", "fallback")
+        report = {
+            "status": skip_msg,
+            "backend": backend,
+            "passes_enabled": selected_passes,
+            "passes_applied": [],
+            "before": None,
+            "after": None,
+            "gates_removed": 0,
+            "reduction_percentage": 0.0,
+            "equivalence": {
+                "type": "skipped",
+                "equivalent": None,
+                "mathematical_equivalence_verified": False,
+                "structural_preservation_verified": True,
+                "method": "circuit_preserved_unchanged",
+                "details": "Optimization skipped due to conditional gates; circuit returned unchanged."
+            },
+            "warnings": warnings,
+        }
+        return OptimizationResult(circuit=qc, report=report)
+
     q_layout: List[Tuple[str, int]] = []
     c_layout: List[Tuple[str, int]] = []
     circuit_metadata: Optional[Dict[str, Any]] = None
