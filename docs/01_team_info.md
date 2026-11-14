@@ -1,40 +1,49 @@
-# Team Information
+# Team Information - Team Eigen
 
 ## Team Overview
 - **Team Name**: Team Eigen
 - **Institution**: PES University (PESU), Bengaluru
 - **Event**: PESU - C-DAC Quantum Hackathon 2026
-- **Target Platform**: C-DAC Qniverse (QSDK / Python Environment)
+- **Target Platform**: C-DAC Qniverse Platform & QSDK
+- **Selected Challenge Pipeline**:
+  - **QC-C2-04**: OpenQASM 2.0/3.0 to QniverseCircuit Converter
+  - **QC-03-03**: Quantum Circuit Optimization Using QSDK
+  - **QC-C1-01**: Circuit Profiling and Limited Basis-Gate Decomposition
+
+Together, these three problem statements form an integrated, end-to-end **Quantum Compilation, Optimization, and Profiling Suite** for C-DAC's Qniverse platform.
 
 ---
 
-## Selected Problem Statements
-Team Eigen is implementing an integrated, modular Quantum Compilation & Optimization Toolkit addressing three interconnected challenges:
+## Team Members
 
-1. **QC-C1-01 | Circuit Profiling and Limited Basis-Gate Decomposition**
-   - Calculation of circuit metrics (total gate counts, 1-qubit & 2-qubit breakdown, earliest-available-layer scheduled depth).
-   - Equivalence-preserving decomposition into user-specified basis gate sets (e.g., `{u3, cx}`, `{rx, ry, rz, cx}`).
-2. **QC-C2-04 | OpenQASM 2.0/3.0 to QniverseCircuit Converter**
-   - High-fidelity parser translating OpenQASM 2.0 and 3.0 programs directly into native `QniverseCircuit` objects.
-   - Preserves qubit registers, gate parameters, barriers, and measurement semantics with clear diagnostic reporting.
-3. **QC-03-03 | Quantum Circuit Optimization Using QSDK**
-   - Rule-based circuit optimization engine applying safe local rewrite passes (identity gate removal, adjacent self-inverse cancellation, adjacent identical CX cancellation).
-   - Preserves circuit semantics, classical dependencies, and barriers without mutating the source circuit.
+| Name | GitHub Username | Role | Primary Responsibilities |
+| :--- | :--- | :--- | :--- |
+| **Dhruti** | `dhruti218` | Documentation & Compliance Lead | Architecture documentation, AI usage compliance, test validation, Git workflow hygiene, report drafting. |
+| **Shiva Mahapatra** | `Shivamahapatra` | Lead Developer (Coding) | Core QSDK integration, QASM parsing engine, circuit synthesis, repository administration. |
+| **Advik Singla** | `adviksingla` | Core Developer (Coding) | Circuit optimization passes, rewrite rule engine, basis-gate decomposition algorithms, unit testing. |
+| **Saumitra Gupta** | `saumitraguptafr` | Presenter & Evaluation Lead | Viva presentation, demonstration script, problem validation against hackathon requirements, judge walkthrough. |
 
 ---
 
-## Team Members and Roles
+## Roles and Responsibilities Matrix
 
-| Name | GitHub Username | Role & Primary Responsibilities |
-| :--- | :--- | :--- |
-| **Dhruti** | `dhruti218` | **Documentation & Compliance Lead**: Complete project documentation, report drafting, GitHub record keeping, and AI usage compliance. |
-| **Advik Singla** | `adviksingla` | **Core Developer (Coding)**: OpenQASM parser implementation, circuit conversion logic, and test suites. |
-| **Shiva Mahapatra** | `Shivamahapatra` | **Core Developer (Coding) & Repository Lead**: Circuit profiling, optimization rewrite passes, basis gate decomposition, and Qniverse integration. |
-| **Saumitra Gupta** | `saumitraguptafr` | **Lead Presenter**: Pitch preparation, viva defense, slide presentation, and judge live demonstration. |
+### 1. Dhruti (Documentation, QA & Compliance Lead)
+- Maintain and curate all repository documentation across `docs/` (`01_team_info.md`, `02_technical_approach.md`, `03_performance_report.md`, `04_working_product.md`, `05_ai_usage_declaration.md`).
+- Ensure 100% adherence to hackathon AI declaration policies and maintain the real-time AI usage log.
+- Verify environment reproducibility on local and Qniverse environments.
+- Conduct code reviews on documentation PRs and enforce branch hygiene (`no direct pushes to main`).
 
----
+### 2. Shiva Mahapatra (Lead Developer - Architecture & Parser)
+- Architect the shared circuit representation layer compatible with Qniverse QSDK.
+- Implement QC-C2-04: OpenQASM 2.0 / 3.0 parsing engine and conversion to native `QniverseCircuit` objects.
+- Manage repository settings, branching policies, and pull request reviews.
 
-## Collaboration & Governance
-- **Branching Model**: Dedicated feature branches (`<name>/<feature>`) off `main`. Direct pushes to `main` are strictly prohibited.
-- **Code Review**: All merges require a Pull Request (PR) with at least one peer approval.
-- **AI Compliance**: Every AI-assisted contribution is logged in [`docs/05_ai_usage_declaration.md`](05_ai_usage_declaration.md) with tool and model names in accordance with hackathon rules.
+### 3. Advik Singla (Developer - Optimization & Profiling Engine)
+- Implement QC-03-03: Rule-based circuit optimization engine (identity cancellation, adjacent self-inverse cancellation, CX cancellation).
+- Implement QC-C1-01: Earliest-available-layer DAG scheduler for circuit depth profiling and target basis-gate decomposition.
+- Develop unit tests and verify physical non-mutating guarantees.
+
+### 4. Saumitra Gupta (Presenter & Demonstration Lead)
+- Formulate the viva presentation narrative and technical slide deck/walkthrough.
+- Design live demonstration scripts proving input-output correctness across all three problem statements.
+- Coordinate with judges during evaluations, explaining algorithmic tradeoffs and Qniverse platform integration.
