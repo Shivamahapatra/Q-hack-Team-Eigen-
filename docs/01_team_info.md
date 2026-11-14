@@ -27,10 +27,10 @@ Team Eigen is implementing an integrated, modular Quantum Compilation & Optimiza
 
 | Name | GitHub Username | Role & Primary Responsibilities |
 | :--- | :--- | :--- |
-| **Dhruti** | `dhruti218` | **Quantum Software Developer**: Profiler implementation, basis gate decomposition algorithms, local setup, and AI compliance logging. |
-| **Advik Singla** | `adviksingla` | **Core Developer**: OpenQASM parsing engine, circuit synthesis, optimization pass logic, and test suites. |
-| **Saumitra Gupta** | `saumitraguptafr` | **Lead Presenter & Documentation Specialist**: Viva preparation, technical documentation, slide deck, and judge presentation. |
-| **Shiva Mahapatra** | `Shivamahapatra` | **Repository Lead & Platform Coordinator**: Repository hygiene, Qniverse platform integration, benchmarking, and review approvals. |
+| **Dhruti** | `dhruti218` | **Documentation & Compliance Lead**: Complete project documentation, report drafting, GitHub record keeping, and AI usage compliance. |
+| **Advik Singla** | `adviksingla` | **Core Developer (Coding)**: OpenQASM parser implementation, circuit conversion logic, and test suites. |
+| **Shiva Mahapatra** | `Shivamahapatra` | **Core Developer (Coding) & Repository Lead**: Circuit profiling, optimization rewrite passes, basis gate decomposition, and Qniverse integration. |
+| **Saumitra Gupta** | `saumitraguptafr` | **Lead Presenter**: Pitch preparation, viva defense, slide presentation, and judge live demonstration. |
 
 ---
 
