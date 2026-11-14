@@ -28,6 +28,18 @@ from optimizer import (
     PASS_IDENTITY_REMOVAL,
     PASS_SELF_INVERSE_CANCELLATION,
     PASS_CX_CANCELLATION,
+    PASS_X_CANCELLATION,
+    PASS_Y_CANCELLATION,
+    PASS_Z_CANCELLATION,
+    PASS_H_CANCELLATION,
+    PASS_CY_CANCELLATION,
+    PASS_CZ_CANCELLATION,
+    PASS_CH_CANCELLATION,
+    PASS_SWAP_CANCELLATION,
+    PASS_CCX_CANCELLATION,
+    PASS_CSWAP_CANCELLATION,
+    PASS_S_SDG_CANCELLATION,
+    PASS_T_TDG_CANCELLATION,
     SUPPORTED_PASSES,
     _reconstruct_circuit,
     _validate_register_layouts,
@@ -339,6 +351,137 @@ class TestQC0303Optimizer(unittest.TestCase):
         self.assertEqual(res.report["gates_removed"], 0)
         self.assertEqual(res.report["reduction_percentage"], 0.0)
         self.assertEqual(res.report["passes_applied"], [])
+
+    # --------------------------------------------- PRIORITY 4: EXPANDED RULES TESTS
+    def test_priority4_y_cancellation(self):
+        """P4: Y-Y cancellation enabled individually with unitary equivalence verified."""
+        ops = [Op("y", (0,)), Op("y", (0,))]
+        res = optimize(ops, enabled_passes=[PASS_Y_CANCELLATION])
+        self.assertEqual(res.report["gates_removed"], 2)
+        self.assertEqual(res.report["after"]["total_gates"], 0)
+        self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    def test_priority4_cy_cancellation_and_asymmetry(self):
+        """P4: CY-CY cancels on identical (c, t); reversed (t, c) does NOT cancel."""
+        # Matching control-target
+        ops1 = [Op("cy", (0, 1)), Op("cy", (0, 1))]
+        res1 = optimize(ops1, enabled_passes=[PASS_CY_CANCELLATION])
+        self.assertEqual(res1.report["gates_removed"], 2)
+        self.assertEqual(res1.report["after"]["total_gates"], 0)
+        self.assertTrue(res1.report["equivalence"]["equivalent"])
+
+        # Reversed control-target
+        ops2 = [Op("cy", (0, 1)), Op("cy", (1, 0))]
+        res2 = optimize(ops2, enabled_passes=[PASS_CY_CANCELLATION])
+        self.assertEqual(res2.report["gates_removed"], 0)
+        self.assertEqual(res2.report["after"]["total_gates"], 2)
+
+    def test_priority4_cz_cancellation_and_symmetric_qubits(self):
+        """P4: CZ-CZ cancels on identical (c, t) AND symmetric swapped (t, c) qubits."""
+        # Matching
+        ops1 = [Op("cz", (0, 1)), Op("cz", (0, 1))]
+        res1 = optimize(ops1, enabled_passes=[PASS_CZ_CANCELLATION])
+        self.assertEqual(res1.report["gates_removed"], 2)
+        self.assertEqual(res1.report["after"]["total_gates"], 0)
+        self.assertTrue(res1.report["equivalence"]["equivalent"])
+
+        # Swapped qubits: CZ(0,1) and CZ(1,0) are mathematically identical
+        ops2 = [Op("cz", (0, 1)), Op("cz", (1, 0))]
+        res2 = optimize(ops2, enabled_passes=[PASS_CZ_CANCELLATION])
+        self.assertEqual(res2.report["gates_removed"], 2)
+        self.assertEqual(res2.report["after"]["total_gates"], 0)
+        self.assertTrue(res2.report["equivalence"]["equivalent"])
+
+    def test_priority4_ch_cancellation_and_asymmetry(self):
+        """P4: CH-CH cancels on matching (c, t); reversed (t, c) does NOT cancel."""
+        ops1 = [Op("ch", (0, 1)), Op("ch", (0, 1))]
+        res1 = optimize(ops1, enabled_passes=[PASS_CH_CANCELLATION])
+        self.assertEqual(res1.report["gates_removed"], 2)
+        self.assertEqual(res1.report["after"]["total_gates"], 0)
+        self.assertTrue(res1.report["equivalence"]["equivalent"])
+
+        ops2 = [Op("ch", (0, 1)), Op("ch", (1, 0))]
+        res2 = optimize(ops2, enabled_passes=[PASS_CH_CANCELLATION])
+        self.assertEqual(res2.report["gates_removed"], 0)
+        self.assertEqual(res2.report["after"]["total_gates"], 2)
+
+    def test_priority4_swap_cancellation_and_symmetric_qubits(self):
+        """P4: SWAP-SWAP cancels on identical AND swapped qubit tuples."""
+        # Matching
+        ops1 = [Op("swap", (0, 1)), Op("swap", (0, 1))]
+        res1 = optimize(ops1, enabled_passes=[PASS_SWAP_CANCELLATION])
+        self.assertEqual(res1.report["gates_removed"], 2)
+        self.assertEqual(res1.report["after"]["total_gates"], 0)
+        self.assertTrue(res1.report["equivalence"]["equivalent"])
+
+        # Swapped: SWAP(0,1) and SWAP(1,0) are identical operations
+        ops2 = [Op("swap", (0, 1)), Op("swap", (1, 0))]
+        res2 = optimize(ops2, enabled_passes=[PASS_SWAP_CANCELLATION])
+        self.assertEqual(res2.report["gates_removed"], 2)
+        self.assertEqual(res2.report["after"]["total_gates"], 0)
+        self.assertTrue(res2.report["equivalence"]["equivalent"])
+
+    def test_priority4_ccx_cancellation(self):
+        """P4: CCX (Toffoli) consecutive pair on identical wires cancels out."""
+        ops = [Op("ccx", (0, 1, 2)), Op("ccx", (0, 1, 2))]
+        res = optimize(ops, enabled_passes=[PASS_CCX_CANCELLATION])
+        self.assertEqual(res.report["gates_removed"], 2)
+        self.assertEqual(res.report["after"]["total_gates"], 0)
+        self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    def test_priority4_cswap_cancellation(self):
+        """P4: CSWAP (Fredkin) consecutive pair on identical wires cancels out."""
+        ops = [Op("cswap", (0, 1, 2)), Op("cswap", (0, 1, 2))]
+        res = optimize(ops, enabled_passes=[PASS_CSWAP_CANCELLATION])
+        self.assertEqual(res.report["gates_removed"], 2)
+        self.assertEqual(res.report["after"]["total_gates"], 0)
+        self.assertTrue(res.report["equivalence"]["equivalent"])
+
+    def test_priority4_s_sdg_inverse_pair_cancellation(self):
+        """P4: S and SDG inverse pairs cancel on identical wires in both directions."""
+        # S then SDG
+        ops1 = [Op("s", (0,)), Op("sdg", (0,))]
+        res1 = optimize(ops1, enabled_passes=[PASS_S_SDG_CANCELLATION])
+        self.assertEqual(res1.report["gates_removed"], 2)
+        self.assertEqual(res1.report["after"]["total_gates"], 0)
+        self.assertTrue(res1.report["equivalence"]["equivalent"])
+
+        # SDG then S
+        ops2 = [Op("sdg", (0,)), Op("s", (0,))]
+        res2 = optimize(ops2, enabled_passes=[PASS_S_SDG_CANCELLATION])
+        self.assertEqual(res2.report["gates_removed"], 2)
+        self.assertEqual(res2.report["after"]["total_gates"], 0)
+        self.assertTrue(res2.report["equivalence"]["equivalent"])
+
+    def test_priority4_t_tdg_inverse_pair_cancellation(self):
+        """P4: T and TDG inverse pairs cancel on identical wires in both directions."""
+        # T then TDG
+        ops1 = [Op("t", (0,)), Op("tdg", (0,))]
+        res1 = optimize(ops1, enabled_passes=[PASS_T_TDG_CANCELLATION])
+        self.assertEqual(res1.report["gates_removed"], 2)
+        self.assertEqual(res1.report["after"]["total_gates"], 0)
+        self.assertTrue(res1.report["equivalence"]["equivalent"])
+
+        # TDG then T
+        ops2 = [Op("tdg", (0,)), Op("t", (0,))]
+        res2 = optimize(ops2, enabled_passes=[PASS_T_TDG_CANCELLATION])
+        self.assertEqual(res2.report["gates_removed"], 2)
+        self.assertEqual(res2.report["after"]["total_gates"], 0)
+        self.assertTrue(res2.report["equivalence"]["equivalent"])
+
+    def test_priority4_grouped_self_inverse_pass_cancels_all(self):
+        """P4: Grouped PASS_SELF_INVERSE_CANCELLATION reduces all supported self-inverses."""
+        ops = [
+            Op("y", (0,)), Op("y", (0,)),
+            Op("cz", (0, 1)), Op("cz", (1, 0)),
+            Op("swap", (0, 1)), Op("swap", (0, 1)),
+            Op("ccx", (0, 1, 2)), Op("ccx", (0, 1, 2)),
+            Op("cswap", (0, 1, 2)), Op("cswap", (0, 1, 2)),
+        ]
+        res = optimize(ops, enabled_passes=[PASS_SELF_INVERSE_CANCELLATION])
+        self.assertEqual(res.report["gates_removed"], 10)
+        self.assertEqual(res.report["after"]["total_gates"], 0)
+        self.assertTrue(res.report["equivalence"]["equivalent"])
 
     # ------------------------------------------------ NON-MUTATION TESTS
     def test_original_circuit_immutability(self):

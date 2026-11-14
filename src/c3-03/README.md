@@ -51,11 +51,25 @@ Input Circuit (QniverseCircuit / QASM / Op list)
 
 ## 3. Supported Optimization Rules & Preconditions
 
+All passes use **per-wire frontier adjacency** (gates on independent wires do not block cancellation, while operations or barriers touching shared wires block cancellation). Each pass is independently enable-able by name or collectively via the grouped pass:
+
 | Optimization Pass | Identifier | Target Gates | Preconditions for Cancellation |
 | :--- | :--- | :--- | :--- |
-| **Pass 1: Identity Removal** | `identity_removal` | `id` | Gate name is explicitly `'id'`. Removed safely without altering wire states. |
-| **Pass 2: Self-Inverse Cancellation** | `self_inverse_cancellation` | `x`, `h`, `z` | Consecutive gates on the **exact same qubit** with identical names: $X \cdot X = I$, $H \cdot H = I$, $Z \cdot Z = I$. |
-| **Pass 3: CX Cancellation** | `cx_cancellation` | `cx` | Consecutive two-qubit CX gates where **control qubits match**, **target qubits match**, and control/target ordering is identical: $\text{CX}(c, t) \cdot \text{CX}(c, t) = I$. Reversed controls $\text{CX}(c, t) \cdot \text{CX}(t, c)$ are **not** cancelled. |
+| **Identity Removal** | `identity_removal` | `id` | Explicit `'id'` gates removed safely. |
+| **Self-Inverse (Grouped)** | `self_inverse_cancellation` | `x, y, z, h, cx, cy, cz, ch, swap, ccx, cswap` | Identical self-inverse gates on the same qubits where no intervening operation has touched any of their wires. For symmetric gates (`cz`, `swap`), swapped qubit order is also cancelled. |
+| **CX Cancellation** | `cx_cancellation` | `cx` | Consecutive CX gates where control and target match in identical order: $\text{CX}(c, t) \cdot \text{CX}(c, t) = I$. Reversed controls $\text{CX}(c, t) \cdot \text{CX}(t, c)$ are strictly preserved. |
+| **X Cancellation** | `x_cancellation` | `x` | $X(q) \cdot X(q) = I$ on matching wire. |
+| **Y Cancellation** | `y_cancellation` | `y` | $Y(q) \cdot Y(q) = I$ on matching wire. |
+| **Z Cancellation** | `z_cancellation` | `z` | $Z(q) \cdot Z(q) = I$ on matching wire. |
+| **H Cancellation** | `h_cancellation` | `h` | $H(q) \cdot H(q) = I$ on matching wire. |
+| **CY Cancellation** | `cy_cancellation` | `cy` | Controlled-Y: $\text{CY}(c, t) \cdot \text{CY}(c, t) = I$. Asymmetric; reversed controls do not cancel. |
+| **CZ Cancellation** | `cz_cancellation` | `cz` | Controlled-Z: $CZ(0, 1) \cdot CZ(0, 1) = I$ and $CZ(0, 1) \cdot CZ(1, 0) = I$ (symmetric control/target). |
+| **CH Cancellation** | `ch_cancellation` | `ch` | Controlled-H: $\text{CH}(c, t) \cdot \text{CH}(c, t) = I$. Asymmetric; reversed controls do not cancel. |
+| **SWAP Cancellation** | `swap_cancellation` | `swap` | $\text{SWAP}(a, b) \cdot \text{SWAP}(a, b) = I$ and $\text{SWAP}(a, b) \cdot \text{SWAP}(b, a) = I$ (symmetric). |
+| **CCX Cancellation** | `ccx_cancellation` | `ccx` | Toffoli gate on matching controls and target: $\text{CCX}(c_1, c_2, t) \cdot \text{CCX}(c_1, c_2, t) = I$. |
+| **CSWAP Cancellation** | `cswap_cancellation` | `cswap` | Fredkin gate on matching control and targets: $\text{CSWAP}(c, t_1, t_2) \cdot \text{CSWAP}(c, t_1, t_2) = I$. |
+| **S/SDG Cancellation** | `s_sdg_cancellation` | `s`, `sdg` | Mutually inverse pairs on same qubit: $S \cdot S^\dagger = I$ and $S^\dagger \cdot S = I$. |
+| **T/TDG Cancellation** | `t_tdg_cancellation` | `t`, `tdg` | Mutually inverse pairs on same qubit: $T \cdot T^\dagger = I$ and $T^\dagger \cdot T = I$. |
 
 ---
 
@@ -195,6 +209,8 @@ python src/c3-03/demo.py
 ---
 
 ## 9. Known Limitations
-1. **Conservative Adjacency Only**: Does not commute independent single-qubit gates across CNOT controls/targets to discover non-adjacent cancellations.
+1. **Per-Wire Adjacency Scope**: Cancellation is permitted across independent wires using frontier tracking, but gates on shared wires are never commuted or reordered.
 2. **Phase Fusion Omitted**: Advanced multi-gate fusions (e.g. $T \cdot T \to S$, $S \cdot S \to Z$) are reserved for higher optimization tiers to maintain conservative certification.
 3. **Parameterized Rotations (DEF-04 Fail-Fast)**: Circuits with parameterized gates (`rx`, `ry`, `rz`, `u3`, `crx`, etc.) are explicitly rejected before optimization because runtime parameter preservation is not implemented in the current SDK adapter. Parameterized circuits will raise `ValueError` to ensure parameters are never lost.
+4. **Conditional Circuits Skipped**: Circuits with `has_conditional=True` are returned unchanged with warning `"optimization skipped: conditional gates present"` to prevent guessing undocumented conditional gate storage.
+5. **Runtime Backend Transparency**: Optimization reports transparently report `"backend": "qniverse"` when executed against live C-DAC QSDK libraries, and `"backend": "fallback"` with diagnostic warnings when the proprietary environment is not installed.

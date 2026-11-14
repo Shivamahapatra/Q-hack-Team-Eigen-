@@ -40,13 +40,52 @@ PASS_IDENTITY_REMOVAL = "identity_removal"
 PASS_SELF_INVERSE_CANCELLATION = "self_inverse_cancellation"
 PASS_CX_CANCELLATION = "cx_cancellation"
 
-SUPPORTED_PASSES = [
+# Individual gate passes
+PASS_X_CANCELLATION = "x_cancellation"
+PASS_Y_CANCELLATION = "y_cancellation"
+PASS_Z_CANCELLATION = "z_cancellation"
+PASS_H_CANCELLATION = "h_cancellation"
+PASS_CY_CANCELLATION = "cy_cancellation"
+PASS_CZ_CANCELLATION = "cz_cancellation"
+PASS_CH_CANCELLATION = "ch_cancellation"
+PASS_SWAP_CANCELLATION = "swap_cancellation"
+PASS_CCX_CANCELLATION = "ccx_cancellation"
+PASS_CSWAP_CANCELLATION = "cswap_cancellation"
+PASS_S_SDG_CANCELLATION = "s_sdg_cancellation"
+PASS_T_TDG_CANCELLATION = "t_tdg_cancellation"
+
+DEFAULT_PASSES = [
     PASS_IDENTITY_REMOVAL,
     PASS_SELF_INVERSE_CANCELLATION,
     PASS_CX_CANCELLATION,
 ]
 
-SELF_INVERSE_GATES = {"x", "h", "z"}
+SUPPORTED_PASSES = [
+    PASS_IDENTITY_REMOVAL,
+    PASS_SELF_INVERSE_CANCELLATION,
+    PASS_CX_CANCELLATION,
+    PASS_X_CANCELLATION,
+    PASS_Y_CANCELLATION,
+    PASS_Z_CANCELLATION,
+    PASS_H_CANCELLATION,
+    PASS_CY_CANCELLATION,
+    PASS_CZ_CANCELLATION,
+    PASS_CH_CANCELLATION,
+    PASS_SWAP_CANCELLATION,
+    PASS_CCX_CANCELLATION,
+    PASS_CSWAP_CANCELLATION,
+    PASS_S_SDG_CANCELLATION,
+    PASS_T_TDG_CANCELLATION,
+]
+
+SELF_INVERSE_GATES = {
+    "x", "y", "z", "h", "cx", "cy", "cz", "ch", "swap", "ccx", "cswap"
+}
+SYMMETRIC_GATES = {"cz", "swap"}
+INVERSE_PAIRS = {
+    ("s", "sdg"), ("sdg", "s"),
+    ("t", "tdg"), ("tdg", "t"),
+}
 NON_UNITARY_GATES = {"measure", "reset", "barrier"}
 
 PARAMETERISED_GATES = {
@@ -60,9 +99,9 @@ VALID_GATES_ARITY = {
     "h": (1, 0), "s": (1, 0), "sdg": (1, 0), "t": (1, 0), "tdg": (1, 0),
     "reset": (1, 0),
     # 2-qubit gates
-    "cx": (2, 0), "cz": (2, 0), "swap": (2, 0),
+    "cx": (2, 0), "cy": (2, 0), "cz": (2, 0), "ch": (2, 0), "swap": (2, 0),
     # 3-qubit gates
-    "ccx": (3, 0),
+    "ccx": (3, 0), "cswap": (3, 0),
     # Measurement: 1 qubit, 1 classical bit
     "measure": (1, 1),
 }
@@ -227,7 +266,11 @@ def _pass_identity_removal(ops: List[Op]) -> Tuple[List[Op], int]:
     return new_ops, removed
 
 
-def _cancel_per_wire_adjacent_pairs(ops: List[Op], target_gates: Set[str]) -> Tuple[List[Op], int]:
+def _cancel_per_wire_adjacent_pairs(
+    ops: List[Op],
+    target_gates: Set[str],
+    allow_symmetric: bool = True
+) -> Tuple[List[Op], int]:
     """
     Cancels pairs of identical self-inverse operations using a per-qubit frontier.
 
@@ -235,7 +278,9 @@ def _cancel_per_wire_adjacent_pairs(ops: List[Op], target_gates: Set[str]) -> Tu
     For every qubit touched by an operation, we maintain the index of the most recent operation.
     Two operations ops[i] and ops[j] (where i < j) cancel if:
       - ops[i].name == ops[j].name and ops[j].name in target_gates
-      - ops[i].qubits == ops[j].qubits (exact same qubits in the exact same order)
+      - Qubit operands match:
+        * For symmetric gates (cz, swap): set(ops[i].qubits) == set(ops[j].qubits)
+        * For all other gates (x, y, z, h, cx, cy, ch, ccx, cswap): ops[i].qubits == ops[j].qubits (strict order)
       - For EVERY qubit q in ops[j].qubits, last_op_on_qubit[q] == i
         (meaning no intervening operation has touched any qubit that this gate operates on)
       - Neither is a barrier, measurement, reset, or other non-unitary delimiter.
@@ -253,22 +298,65 @@ def _cancel_per_wire_adjacent_pairs(ops: List[Op], target_gates: Set[str]) -> Tu
         if is_target and op.qubits:
             cand_i = last_op_on_qubit.get(op.qubits[0])
 
+            if cand_i is not None and cand_i not in cancelled_indices:
+                cand_op = ops[cand_i]
+                qubits_match = (
+                    (set(cand_op.qubits) == set(op.qubits))
+                    if (allow_symmetric and op.name in SYMMETRIC_GATES)
+                    else (cand_op.qubits == op.qubits)
+                )
+                if (
+                    qubits_match
+                    and all(last_op_on_qubit.get(q) == cand_i for q in op.qubits)
+                    and cand_op.name == op.name
+                    and cand_op.name not in NON_UNITARY_GATES
+                ):
+                    # Valid cancellation found
+                    cancelled_indices.add(cand_i)
+                    cancelled_indices.add(j)
+                    for q in op.qubits:
+                        last_op_on_qubit[q] = None
+                    continue
+
+        # Non-cancelled op updates the frontier on all qubits it acts on
+        for q in op.qubits:
+            last_op_on_qubit[q] = j
+
+    if not cancelled_indices:
+        return ops, 0
+
+    new_ops = [op for idx, op in enumerate(ops) if idx not in cancelled_indices]
+    return new_ops, len(cancelled_indices)
+
+
+def _cancel_inverse_pairs(ops: List[Op], target_pairs: Set[Tuple[str, str]]) -> Tuple[List[Op], int]:
+    """
+    Cancels pairs of mutually inverse operations on identical wires using per-wire frontier tracking.
+    E.g. S-SDG, SDG-S, T-TDG, TDG-T.
+    """
+    last_op_on_qubit: Dict[int, Optional[int]] = {}
+    cancelled_indices: Set[int] = set()
+
+    for j, op in enumerate(ops):
+        is_delimiter = op.name in NON_UNITARY_GATES
+
+        if not is_delimiter and op.qubits:
+            cand_i = last_op_on_qubit.get(op.qubits[0])
+
             if (
                 cand_i is not None
                 and cand_i not in cancelled_indices
                 and all(last_op_on_qubit.get(q) == cand_i for q in op.qubits)
-                and ops[cand_i].name == op.name
+                and (ops[cand_i].name, op.name) in target_pairs
                 and ops[cand_i].qubits == op.qubits
                 and ops[cand_i].name not in NON_UNITARY_GATES
             ):
-                # Valid cancellation found
                 cancelled_indices.add(cand_i)
                 cancelled_indices.add(j)
                 for q in op.qubits:
                     last_op_on_qubit[q] = None
                 continue
 
-        # Non-cancelled op updates the frontier on all qubits it acts on
         for q in op.qubits:
             last_op_on_qubit[q] = j
 
@@ -282,12 +370,12 @@ def _cancel_per_wire_adjacent_pairs(ops: List[Op], target_gates: Set[str]) -> Tu
 def _pass_self_inverse_cancellation(ops: List[Op]) -> Tuple[List[Op], int]:
     """
     PASS 2: SELF-INVERSE GATE CANCELLATION
-    Cancels identical self-inverse gates operating on the exact same qubits:
-    - Uses per-wire frontier tracking to allow cancellation across gates on disjoint qubits.
-    - Blocked if an intervening operation touches any shared qubit.
-    - Blocked by barriers, measurements, resets, or classically conditioned gates.
+    Cancels identical self-inverse gates operating on matching qubits:
+    - 1-qubit: x, y, z, h
+    - 2-qubit: cx, cy, cz, ch, swap (cz and swap accept symmetric qubit ordering)
+    - 3-qubit: ccx, cswap
     """
-    return _cancel_per_wire_adjacent_pairs(ops, SELF_INVERSE_GATES)
+    return _cancel_per_wire_adjacent_pairs(ops, SELF_INVERSE_GATES, allow_symmetric=True)
 
 
 def _pass_cx_cancellation(ops: List[Op]) -> Tuple[List[Op], int]:
@@ -299,7 +387,7 @@ def _pass_cx_cancellation(ops: List[Op]) -> Tuple[List[Op], int]:
     - Uses per-wire frontier tracking (neither control nor target touched in between).
     - Blocked by barriers, measurements, resets, or any intervening op touching control or target.
     """
-    return _cancel_per_wire_adjacent_pairs(ops, {"cx"})
+    return _cancel_per_wire_adjacent_pairs(ops, {"cx"}, allow_symmetric=False)
 
 
 def _run_optimization_pipeline(ops: List[Op], passes: List[str]) -> Tuple[List[Op], List[str]]:
@@ -313,6 +401,21 @@ def _run_optimization_pipeline(ops: List[Op], passes: List[str]) -> Tuple[List[O
     changed = True
     iteration = 0
     max_iterations = max(len(ops) * 2, 100)
+
+    # Individual gate pass mapping
+    individual_gate_map = {
+        PASS_CX_CANCELLATION: ({"cx"}, False),
+        PASS_X_CANCELLATION: ({"x"}, False),
+        PASS_Y_CANCELLATION: ({"y"}, False),
+        PASS_Z_CANCELLATION: ({"z"}, False),
+        PASS_H_CANCELLATION: ({"h"}, False),
+        PASS_CY_CANCELLATION: ({"cy"}, False),
+        PASS_CZ_CANCELLATION: ({"cz"}, True),
+        PASS_CH_CANCELLATION: ({"ch"}, False),
+        PASS_SWAP_CANCELLATION: ({"swap"}, True),
+        PASS_CCX_CANCELLATION: ({"ccx"}, False),
+        PASS_CSWAP_CANCELLATION: ({"cswap"}, False),
+    }
 
     while changed and iteration < max_iterations:
         changed = False
@@ -330,10 +433,24 @@ def _run_optimization_pipeline(ops: List[Op], passes: List[str]) -> Tuple[List[O
                 passes_applied.add(PASS_SELF_INVERSE_CANCELLATION)
                 changed = True
 
-        if PASS_CX_CANCELLATION in passes:
-            current_ops, count = _pass_cx_cancellation(current_ops)
+        # Run individually enabled passes (if not already handled by self-inverse group)
+        for pass_name, (gate_set, sym) in individual_gate_map.items():
+            if pass_name in passes and (PASS_SELF_INVERSE_CANCELLATION not in passes or pass_name == PASS_CX_CANCELLATION):
+                current_ops, count = _cancel_per_wire_adjacent_pairs(current_ops, gate_set, allow_symmetric=sym)
+                if count > 0:
+                    passes_applied.add(pass_name)
+                    changed = True
+
+        if PASS_S_SDG_CANCELLATION in passes:
+            current_ops, count = _cancel_inverse_pairs(current_ops, {("s", "sdg"), ("sdg", "s")})
             if count > 0:
-                passes_applied.add(PASS_CX_CANCELLATION)
+                passes_applied.add(PASS_S_SDG_CANCELLATION)
+                changed = True
+
+        if PASS_T_TDG_CANCELLATION in passes:
+            current_ops, count = _cancel_inverse_pairs(current_ops, {("t", "tdg"), ("tdg", "t")})
+            if count > 0:
+                passes_applied.add(PASS_T_TDG_CANCELLATION)
                 changed = True
 
     return current_ops, sorted(passes_applied)

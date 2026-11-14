@@ -180,8 +180,22 @@ def _op_matrix(o, n):
                 continue
         elif o.name == "swap":
             a, b = o.qubits; nb[a], nb[b] = bits[b], bits[a]
+        elif o.name == "ch":
+            c, t = o.qubits
+            if bits[c]:
+                b = bits[t]
+                for b_prime in (0, 1):
+                    amp = (1.0 / np.sqrt(2.0)) * ((-1) ** (b * b_prime))
+                    nb_h = bits.copy()
+                    nb_h[t] = b_prime
+                    m[int("".join(map(str, nb_h)), 2), col] += amp
+                continue
         elif o.name == "ccx":
             if bits[o.qubits[0]] and bits[o.qubits[1]]: nb[o.qubits[2]] ^= 1
+        elif o.name == "cswap":
+            c, t1, t2 = o.qubits
+            if bits[c]:
+                nb[t1], nb[t2] = bits[t2], bits[t1]
         else:
             raise ValueError(f"verifier does not know gate {o.name}")
         phase = -1 if (o.name == "cz" and all(bits[q] for q in o.qubits)) else 1
