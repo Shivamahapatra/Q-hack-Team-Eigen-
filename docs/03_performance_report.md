@@ -2,11 +2,33 @@
 
 ## 1. Overview & Verification Standards
 
-In compliance with hackathon regulations, all metrics and resource counts presented in this report were produced by **actual execution** of [`src/qc_c1_01.py`](file:///C:/Users/DELL/.gemini/antigravity/scratch/Q-hack-Team-Eigen-/src/qc_c1_01.py) on our test environment. No metrics are simulated or estimated.
+In compliance with hackathon regulations, all metrics and resource counts presented in this report were produced by **actual execution** of [`src/qc_c1_01.py`](file:///C:/Users/DELL/.gemini/antigravity/scratch/Q-hack-Team-Eigen-/src/qc_c1_01.py) and [`src/profiler.py`](file:///C:/Users/DELL/.gemini/antigravity/scratch/Q-hack-Team-Eigen-/src/profiler.py) on our test environment. No metrics are simulated or estimated.
 
 ---
 
-## 2. Test Suite 1: Circuit Depth & Scheduling Verification
+## 2. Class 1 Part A: Baseline Circuit Profiling Output
+
+The circuit profiler evaluates circuit operations, wire occupancy, and earliest-available-layer depth.
+
+### Execution Output:
+```
+========== CIRCUIT PROFILE ==========
+total_gate_count: 4
+gate_count_by_type: {'H': 1, 'X': 1, 'CNOT': 1, 'Z': 1}
+declared_qubits: 2
+used_qubits: 2
+unused_qubits: 0
+single_qubit_gate_count: 3
+multi_qubit_gate_count: 1
+two_qubit_gate_count: 1
+operation_count: 5
+operation_count_by_kind: {'gate': 4, 'measurement': 1}
+circuit_depth: 3
+unsupported_operations: []
+=====================================
+```
+
+### Depth & Scheduling Verification
 
 The earliest-available-layer DAG scheduler was verified across three canonical concurrency scenarios on 2 to 3 qubits:
 
@@ -16,13 +38,12 @@ The earliest-available-layer DAG scheduler was verified across three canonical c
 | **Disjoint Parallel** | `H(0), H(1), H(2)` | 3 | 3 | **1** | 1 (fully concurrent) | PASS |
 | **Barrier Sync** | `H(0) -> barrier(0,1) -> H(1)` | 2 | 2 | **2** | 2 (barrier syncs, adds 0 layers) | PASS |
 
-### Concurrency Observation
 - Disjoint operations execute in the same layer ($Depth = 1$), verifying that independent quantum wires do not block each other.
 - The barrier forces synchronization across wires without artificially inflating the gate layer count.
 
 ---
 
-## 3. Test Suite 2: Basis-Gate Decomposition Performance
+## 3. Class 1 Part B: Basis-Gate Decomposition Performance
 
 ### Case Study: Decomposing `SWAP` into Native Basis $\{cx, h\}$
 
@@ -30,7 +51,55 @@ The earliest-available-layer DAG scheduler was verified across three canonical c
 - **Target Hardware Basis**: `['cx', 'h']`
 - **Generated Report File**: [`results/qc_c1_01_profile_report.json`](../results/qc_c1_01_profile_report.json)
 
-#### Exact Execution JSON Report:
+#### Before decomposition:
+```
+========== CIRCUIT PROFILE ==========
+total_gate_count: 2
+gate_count_by_type: {'H': 1, 'SWAP': 1}
+declared_qubits: 2
+used_qubits: 2
+unused_qubits: 0
+single_qubit_gate_count: 1
+multi_qubit_gate_count: 1
+two_qubit_gate_count: 1
+operation_count: 3
+operation_count_by_kind: {'gate': 2, 'measurement': 1}
+circuit_depth: 3
+unsupported_operations: []
+======================================
+```
+
+#### After decomposition:
+```
+========== CIRCUIT PROFILE ==========
+total_gate_count: 4
+gate_count_by_type: {'H': 1, 'CX': 3}
+declared_qubits: 2
+used_qubits: 2
+unused_qubits: 0
+single_qubit_gate_count: 1
+multi_qubit_gate_count: 3
+two_qubit_gate_count: 3
+operation_count: 5
+operation_count_by_kind: {'gate': 4, 'measurement': 1}
+circuit_depth: 5
+unsupported_operations: []
+======================================
+```
+
+#### Metrics Analysis Table:
+| Metric | Before Decomposition | After Decomposition | Delta |
+| :--- | :--- | :--- | :--- |
+| **Total Gate Count** | 2 | 4 | +2 gates (+100%) |
+| **Gate Breakdown** | `h`: 1, `swap`: 1 | `h`: 1, `cx`: 3 | Replaced 1 SWAP with 3 CX |
+| **Single-Qubit Gates** | 1 | 1 | 0 |
+| **Multi-Qubit Gates** | 1 | 3 | +2 |
+| **Two-Qubit Gates** | 1 | 3 | +2 |
+| **Circuit Depth** | 3 | 5 | +2 layers |
+| **Measurements Preserved** | 1 | 1 | Exact match (preserved) |
+| **Decomposition Status** | - | **OK** | Clean compilation |
+
+#### Structured Execution JSON:
 ```json
 {
   "basis": [
@@ -69,17 +138,6 @@ The earliest-available-layer DAG scheduler was verified across three canonical c
   "status": "OK"
 }
 ```
-
-#### Metrics Analysis Table:
-| :--- | :--- | :--- | :--- |
-| **Total Gate Count** | 2 | 4 | +2 gates (+100%) |
-| **Gate Breakdown** | `h`: 1, `swap`: 1 | `h`: 1, `cx`: 3 | Replaced 1 SWAP with 3 CX |
-| **Single-Qubit Gates** | 1 | 1 | 0 |
-| **Multi-Qubit Gates** | 1 | 3 | +2 |
-| **Two-Qubit Gates** | 1 | 3 | +2 |
-| **Circuit Depth** | 3 | 5 | +2 layers |
-| **Measurements Preserved** | 1 | 1 | Exact match (preserved) |
-| **Decomposition Status** | - | **OK** | Clean compilation |
 
 ---
 
