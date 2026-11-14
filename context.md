@@ -7,9 +7,9 @@
 - **Target Platform**: Qniverse
 
 ## Repository Status
-- Working branch: `snehasish/c1-01`
+- Current branch: `main` (feature branch `snehasish/c1-01` merged and pushed)
 - Problem in progress: **QC-C1-01: Circuit Profiling and Limited Basis-Gate Decomposition**
-- Core profiler, OpenQASM converter fallback (`from_qniverse`), SDK constructor (`to_qniverse`), matrix verifier, test suite, and demo completed.
+- Core profiler, Qniverse in-memory adapter (`src/qniverse_adapter.py`), OpenQASM converter fallback (`from_qniverse`), SDK constructor (`to_qniverse`), matrix verifier, test suite, and demo merged into `main`.
 - Target platform: C-DAC Qniverse (QSDK)
 
 ## Project Structure
