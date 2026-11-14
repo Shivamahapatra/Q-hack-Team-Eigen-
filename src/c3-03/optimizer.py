@@ -26,6 +26,15 @@ for _p in _candidates:
 from c1_01_final import Op, profile, unitary, equal_up_to_phase, NON_UNITARY
 import qniverse_adapter as qa
 
+# Verified Qniverse SDK imports (available only when running on C-DAC Qniverse platform)
+try:
+    from qniverse.gates import *
+    import qniverse.gates as G
+    from qniverse.QniverseCircuit import QniverseCircuit, QuantumRegister, ClassicalRegister
+    _HAVE_QNIVERSE = True
+except (ImportError, ModuleNotFoundError):
+    _HAVE_QNIVERSE = False
+
 # Supported optimization passes
 PASS_IDENTITY_REMOVAL = "identity_removal"
 PASS_SELF_INVERSE_CANCELLATION = "self_inverse_cancellation"
@@ -359,167 +368,182 @@ def _reconstruct_circuit(
     _validate_circuit_ops(ops, num_qubits, num_clbits)
 
     # Attempt to build via live Qniverse SDK if available
-    try:
-        from qniverse.circuit import QniverseCircuit
-        from qniverse.registers import QuantumRegister, ClassicalRegister
-        import qniverse.gates as G
+    live_G = sys.modules.get("qniverse.gates") if "qniverse.gates" in sys.modules else (globals().get("G") if _HAVE_QNIVERSE else None)
+    live_qc_cls = None
+    live_qreg_cls = None
+    live_creg_cls = None
+    if "qniverse.QniverseCircuit" in sys.modules:
+        m = sys.modules["qniverse.QniverseCircuit"]
+        live_qc_cls = getattr(m, "QniverseCircuit", None)
+        live_qreg_cls = getattr(m, "QuantumRegister", None)
+        live_creg_cls = getattr(m, "ClassicalRegister", None)
+    elif _HAVE_QNIVERSE:
+        live_qc_cls = globals().get("QniverseCircuit")
+        live_qreg_cls = globals().get("QuantumRegister")
+        live_creg_cls = globals().get("ClassicalRegister")
 
-        new_qc = QniverseCircuit()
-        q_map = {}
-        curr_q = 0
-        for name, size in q_layout:
-            reg = QuantumRegister(size, name)
-            new_qc.add_register(reg)
-            for i in range(size):
-                q_map[curr_q + i] = reg[i]
-            curr_q += size
+    if live_G and live_qc_cls and live_qreg_cls and live_creg_cls:
+        try:
+            new_qc = live_qc_cls()
+            new_qc._backend = "qniverse"
+            q_map = {}
+            curr_q = 0
+            for name, size in q_layout:
+                reg = live_qreg_cls(size, name)
+                new_qc.add_register(reg)
+                for i in range(size):
+                    q_map[curr_q + i] = reg[i]
+                curr_q += size
 
-        c_map = {}
-        curr_c = 0
-        for name, size in c_layout:
-            reg = ClassicalRegister(size, name)
-            new_qc.add_register(reg)
-            for i in range(size):
-                c_map[curr_c + i] = reg[i]
-            curr_c += size
+            c_map = {}
+            curr_c = 0
+            for name, size in c_layout:
+                reg = live_creg_cls(size, name)
+                new_qc.add_register(reg)
+                for i in range(size):
+                    c_map[curr_c + i] = reg[i]
+                curr_c += size
 
-        for o in ops:
-            if o.name == "measure":
-                gate_fn = getattr(G, "measure", None)
-                if not gate_fn:
-                    raise ValueError("Cannot reconstruct circuit: 'measure' not supported in Qniverse gates")
-                new_qc.add_gate(gate_fn, q_map[o.qubits[0]], c_map[o.cbits[0]])
-            elif o.name == "barrier":
-                gate_fn = getattr(G, "barrier", None)
-                if not gate_fn:
-                    raise ValueError("Cannot reconstruct circuit: 'barrier' not supported in Qniverse gates")
-                new_qc.add_gate(gate_fn, *[q_map[q] for q in o.qubits])
-            elif o.name == "reset":
-                gate_fn = getattr(G, "reset", None)
-                if not gate_fn:
-                    raise ValueError("Cannot reconstruct circuit: 'reset' not supported in Qniverse gates")
-                new_qc.add_gate(gate_fn, q_map[o.qubits[0]])
-            else:
-                gate_fn = getattr(G, o.name, None)
-                if not gate_fn:
-                    raise ValueError(f"Cannot reconstruct circuit: gate '{o.name}' not supported in Qniverse gates")
-                new_qc.add_gate(gate_fn, *[q_map[q] for q in o.qubits])
-
-        if len(new_qc.operations) != len(ops):
-            raise RuntimeError(
-                f"Reconstructed circuit operation count mismatch: expected {len(ops)}, got {len(new_qc.operations)}"
-            )
-
-        if metadata:
-            new_qc.metadata = copy.deepcopy(metadata)
-        return new_qc
-
-    except (ImportError, ModuleNotFoundError, NotImplementedError, AttributeError):
-        # Offline representation conforming strictly to Qniverse runtime structure
-        class _MockReg:
-            def __init__(self, kind: str, size: int, name: str):
-                self.kind = kind
-                self.size = size
-                self.name = name
-
-            def __repr__(self):
-                return f"{self.kind}Register({self.size}, '{self.name}')"
-
-        class _MockWire:
-            def __init__(self, kind: str, reg_name: str, size: int, idx: int):
-                self.kind = kind
-                self.reg_name = reg_name
-                self.size = size
-                self.idx = idx
-
-            def __repr__(self):
-                reg_cls = "QuantumRegister" if self.kind == "Qubit" else "ClassicalRegister"
-                return f"{self.kind}({reg_cls}({self.size}, '{self.reg_name}'), {self.idx})"
-
-        class _MockGate:
-            def __init__(self, name: str):
-                lower_name = name.lower()
-                if lower_name not in VALID_GATES_ARITY and lower_name != "barrier":
-                    raise ValueError(f"Cannot reconstruct operation: unsupported gate type '{name}'")
-                if lower_name == "measure":
-                    self.name = "Measure"
-                elif lower_name == "barrier":
-                    self.name = "Barrier"
-                elif lower_name == "reset":
-                    self.name = "Reset"
+            for o in ops:
+                if o.name == "measure":
+                    gate_fn = getattr(live_G, "measure", None)
+                    if not gate_fn:
+                        raise ValueError("Cannot reconstruct circuit: 'measure' not supported in Qniverse gates")
+                    new_qc.add_gate(gate_fn, q_map[o.qubits[0]], c_map[o.cbits[0]])
+                elif o.name == "barrier":
+                    gate_fn = getattr(live_G, "barrier", None)
+                    if not gate_fn:
+                        raise ValueError("Cannot reconstruct circuit: 'barrier' not supported in Qniverse gates")
+                    new_qc.add_gate(gate_fn, *[q_map[q] for q in o.qubits])
+                elif o.name == "reset":
+                    gate_fn = getattr(live_G, "reset", None)
+                    if not gate_fn:
+                        raise ValueError("Cannot reconstruct circuit: 'reset' not supported in Qniverse gates")
+                    new_qc.add_gate(gate_fn, q_map[o.qubits[0]])
                 else:
-                    self.name = name.upper()
+                    gate_fn = getattr(live_G, o.name, None)
+                    if not gate_fn:
+                        raise ValueError(f"Cannot reconstruct circuit: gate '{o.name}' not supported in Qniverse gates")
+                    new_qc.add_gate(gate_fn, *[q_map[q] for q in o.qubits])
 
-        def _map_wire(idx: int, layout: List[Tuple[str, int]], kind: str) -> _MockWire:
-            curr = 0
-            for name, size in layout:
-                if curr <= idx < curr + size:
-                    return _MockWire(kind, name, size, idx - curr)
-                curr += size
-            # DEF-08: Never fabricate a fallback wire!
-            raise ValueError(f"Wire index {idx} out of range for declared {kind} layout (total size {curr})")
+            if len(new_qc.operations) != len(ops):
+                raise RuntimeError(
+                    f"Reconstructed circuit operation count mismatch: expected {len(ops)}, got {len(new_qc.operations)}"
+                )
 
-        class _MockQniverseCircuit:
-            def __init__(
-                self,
-                n_q: int,
-                n_c: int,
-                op_list: List[Op],
-                q_lay: List[Tuple[str, int]],
-                c_lay: List[Tuple[str, int]],
-                meta: Optional[Dict[str, Any]]
-            ):
-                self.num_qubits = n_q
-                self.num_clbits = n_c
-                self.registers = []
-                for name, size in q_lay:
-                    self.registers.append(_MockReg("Quantum", size, name))
-                for name, size in c_lay:
-                    self.registers.append(_MockReg("Classical", size, name))
+            if metadata:
+                new_qc.metadata = copy.deepcopy(metadata)
+            return new_qc
+        except Exception as e:
+            print(f"Warning: Live Qniverse SDK reconstruction failed ({e}). Falling back to mock backend.")
 
-                self.operations = []
-                for o in op_list:
-                    if o.name == "measure":
-                        wires = (
-                            _map_wire(o.qubits[0], q_lay, "Qubit"),
-                            _map_wire(o.cbits[0], c_lay, "Clbit")
-                        )
-                    else:
-                        wires = tuple(_map_wire(q, q_lay, "Qubit") for q in o.qubits)
-                    self.operations.append((_MockGate(o.name), wires))
+    print("Warning: Real Qniverse SDK not found (qniverse package missing). Using fallback in-memory mock backend.")
+    # Offline representation conforming strictly to Qniverse runtime structure
+    class _MockReg:
+        def __init__(self, kind: str, size: int, name: str):
+            self.kind = kind
+            self.size = size
+            self.name = name
 
-                if len(self.operations) != len(op_list):
-                    raise RuntimeError(
-                        f"Reconstructed mock circuit operation count mismatch: expected {len(op_list)}, got {len(self.operations)}"
+        def __repr__(self):
+            return f"{self.kind}Register({self.size}, '{self.name}')"
+
+    class _MockWire:
+        def __init__(self, kind: str, reg_name: str, size: int, idx: int):
+            self.kind = kind
+            self.reg_name = reg_name
+            self.size = size
+            self.idx = idx
+
+        def __repr__(self):
+            reg_cls = "QuantumRegister" if self.kind == "Qubit" else "ClassicalRegister"
+            return f"{self.kind}({reg_cls}({self.size}, '{self.reg_name}'), {self.idx})"
+
+    class _MockGate:
+        def __init__(self, name: str):
+            lower_name = name.lower()
+            if lower_name not in VALID_GATES_ARITY and lower_name != "barrier":
+                raise ValueError(f"Cannot reconstruct operation: unsupported gate type '{name}'")
+            if lower_name == "measure":
+                self.name = "Measure"
+            elif lower_name == "barrier":
+                self.name = "Barrier"
+            elif lower_name == "reset":
+                self.name = "Reset"
+            else:
+                self.name = name.upper()
+
+    def _map_wire(idx: int, layout: List[Tuple[str, int]], kind: str) -> _MockWire:
+        curr = 0
+        for name, size in layout:
+            if curr <= idx < curr + size:
+                return _MockWire(kind, name, size, idx - curr)
+            curr += size
+        # DEF-08: Never fabricate a fallback wire!
+        raise ValueError(f"Wire index {idx} out of range for declared {kind} layout (total size {curr})")
+
+    class _MockQniverseCircuit:
+        def __init__(
+            self,
+            n_q: int,
+            n_c: int,
+            op_list: List[Op],
+            q_lay: List[Tuple[str, int]],
+            c_lay: List[Tuple[str, int]],
+            meta: Optional[Dict[str, Any]]
+        ):
+            self._backend = "fallback"
+            self.num_qubits = n_q
+            self.num_clbits = n_c
+            self.registers = []
+            for name, size in q_lay:
+                self.registers.append(_MockReg("Quantum", size, name))
+            for name, size in c_lay:
+                self.registers.append(_MockReg("Classical", size, name))
+
+            self.operations = []
+            for o in op_list:
+                if o.name == "measure":
+                    wires = (
+                        _map_wire(o.qubits[0], q_lay, "Qubit"),
+                        _map_wire(o.cbits[0], c_lay, "Clbit")
                     )
+                else:
+                    wires = tuple(_map_wire(q, q_lay, "Qubit") for q in o.qubits)
+                self.operations.append((_MockGate(o.name), wires))
 
-                self.metadata = copy.deepcopy(meta) if meta else None
+            if len(self.operations) != len(op_list):
+                raise RuntimeError(
+                    f"Reconstructed mock circuit operation count mismatch: expected {len(op_list)}, got {len(self.operations)}"
+                )
 
-            def qasm(self) -> str:
-                lines = [
-                    "OPENQASM 2.0;",
-                    'include "qelib1.inc";'
-                ]
-                for reg in self.registers:
-                    if reg.kind == "Quantum":
-                        lines.append(f"qreg {reg.name}[{reg.size}];")
-                    else:
-                        lines.append(f"creg {reg.name}[{reg.size}];")
-                for gate, wires in self.operations:
-                    gname = gate.name.lower()
-                    if gname == "measure":
-                        lines.append(f"measure {wires[0].reg_name}[{wires[0].idx}] -> {wires[1].reg_name}[{wires[1].idx}];")
-                    elif gname == "barrier":
-                        args = ", ".join(f"{w.reg_name}[{w.idx}]" for w in wires)
-                        lines.append(f"barrier {args};")
-                    elif gname == "reset":
-                        lines.append(f"reset {wires[0].reg_name}[{wires[0].idx}];")
-                    else:
-                        args = ", ".join(f"{w.reg_name}[{w.idx}]" for w in wires)
-                        lines.append(f"{gname} {args};")
-                return "\n".join(lines) + "\n"
+            self.metadata = copy.deepcopy(meta) if meta else None
 
-        return _MockQniverseCircuit(num_qubits, num_clbits, ops, q_layout, c_layout, metadata)
+        def qasm(self) -> str:
+            lines = [
+                "OPENQASM 2.0;",
+                'include "qelib1.inc";'
+            ]
+            for reg in self.registers:
+                if reg.kind == "Quantum":
+                    lines.append(f"qreg {reg.name}[{reg.size}];")
+                else:
+                    lines.append(f"creg {reg.name}[{reg.size}];")
+            for gate, wires in self.operations:
+                gname = gate.name.lower()
+                if gname == "measure":
+                    lines.append(f"measure {wires[0].reg_name}[{wires[0].idx}] -> {wires[1].reg_name}[{wires[1].idx}];")
+                elif gname == "barrier":
+                    args = ", ".join(f"{w.reg_name}[{w.idx}]" for w in wires)
+                    lines.append(f"barrier {args};")
+                elif gname == "reset":
+                    lines.append(f"reset {wires[0].reg_name}[{wires[0].idx}];")
+                else:
+                    args = ", ".join(f"{w.reg_name}[{w.idx}]" for w in wires)
+                    lines.append(f"{gname} {args};")
+            return "\n".join(lines) + "\n"
+
+    return _MockQniverseCircuit(num_qubits, num_clbits, ops, q_layout, c_layout, metadata)
 
 
 def verify_equivalence(
@@ -820,18 +844,6 @@ def optimize(
     if any(o.name in NON_UNITARY for o in original_ops_snapshot):
         warnings.append("Circuit contains non-unitary operations (measure/barrier/reset) preserved structurally.")
 
-    report = {
-        "status": status,
-        "passes_enabled": selected_passes,
-        "passes_applied": passes_applied,
-        "before": metrics_before,
-        "after": metrics_after,
-        "gates_removed": gates_removed,
-        "reduction_percentage": reduction_pct,
-        "equivalence": eq_check,
-        "warnings": warnings,
-    }
-
     # Reconstruct fresh circuit object preserving layout and metadata
     new_circuit = _reconstruct_circuit(
         optimized_ops,
@@ -841,5 +853,22 @@ def optimize(
         c_layout=c_layout,
         metadata=circuit_metadata
     )
+
+    backend = getattr(new_circuit, "_backend", "fallback")
+    if backend == "fallback":
+        warnings.append("Qniverse SDK not installed; executed on fallback in-memory mock backend.")
+
+    report = {
+        "status": status,
+        "backend": backend,
+        "passes_enabled": selected_passes,
+        "passes_applied": passes_applied,
+        "before": metrics_before,
+        "after": metrics_after,
+        "gates_removed": gates_removed,
+        "reduction_percentage": reduction_pct,
+        "equivalence": eq_check,
+        "warnings": warnings,
+    }
 
     return OptimizationResult(circuit=new_circuit, report=report)

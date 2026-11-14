@@ -277,6 +277,53 @@ class TestQC0303Optimizer(unittest.TestCase):
         self.assertEqual(res.report["after"]["total_gates"], 3)
         self.assertTrue(res.report["equivalence"]["equivalent"])
 
+    # --------------------------------------------- PRIORITY 2: BACKEND AND IMPORTS TESTS
+    def test_priority2_backend_fallback_reported(self):
+        """P2: When real Qniverse SDK is missing, report explicitly flags backend as fallback."""
+        ops = [Op("h", (0,))]
+        res = optimize(ops)
+        self.assertIn("backend", res.report)
+        self.assertEqual(res.report["backend"], "fallback")
+        self.assertTrue(any("fallback" in w.lower() for w in res.report["warnings"]))
+
+    def test_priority2_backend_qniverse_reported_when_live(self):
+        """P2: When live Qniverse SDK is simulated/imported, report sets backend to qniverse."""
+        import types
+        from unittest.mock import patch
+
+        mock_gates_mod = types.ModuleType("qniverse.gates")
+        class FakeGate:
+            pass
+        mock_gates_mod.h = FakeGate()
+
+        mock_qc_mod = types.ModuleType("qniverse.QniverseCircuit")
+        class FakeQC:
+            def __init__(self):
+                self.operations = []
+                self.registers = []
+            def add_register(self, reg):
+                self.registers.append(reg)
+            def add_gate(self, gate, *qubits):
+                self.operations.append((gate, qubits))
+        class FakeReg:
+            def __init__(self, size, name):
+                self.size = size
+                self.name = name
+            def __getitem__(self, idx):
+                return (self.name, idx)
+        mock_qc_mod.QniverseCircuit = FakeQC
+        mock_qc_mod.QuantumRegister = FakeReg
+        mock_qc_mod.ClassicalRegister = FakeReg
+
+        with patch.dict(sys.modules, {
+            "qniverse": types.ModuleType("qniverse"),
+            "qniverse.gates": mock_gates_mod,
+            "qniverse.QniverseCircuit": mock_qc_mod
+        }):
+            ops = [Op("h", (0,))]
+            res = optimize(ops)
+            self.assertEqual(res.report["backend"], "qniverse")
+
     # ------------------------------------------------ NON-MUTATION TESTS
     def test_original_circuit_immutability(self):
         """Safety: Original circuit object and operations remain 100% untouched."""

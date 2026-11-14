@@ -18,6 +18,15 @@ import numpy as np
 
 NON_UNITARY = {"measure", "reset", "barrier"}
 
+# Verified Qniverse SDK imports (available only when running on C-DAC Qniverse platform)
+try:
+    from qniverse.gates import *
+    import qniverse.gates as qg
+    from qniverse.QniverseCircuit import QniverseCircuit, QuantumRegister, ClassicalRegister
+    _HAVE_QNIVERSE = True
+except (ImportError, ModuleNotFoundError):
+    _HAVE_QNIVERSE = False
+
 
 @dataclass(frozen=True)
 class Op:
@@ -331,13 +340,11 @@ def to_qniverse(ops, num_qubits):
     """
     Builds a new QniverseCircuit from the Op list, preserving qubit indices
     and the order of operations, measurements, resets, and barriers.
-    Uses only documented Qniverse SDK calls (qniverse.circuit, qniverse.registers, qniverse.gates).
+    Uses only verified Qniverse SDK imports:
+      from qniverse.gates import *
+      from qniverse.QniverseCircuit import QniverseCircuit, QuantumRegister, ClassicalRegister
     """
-    try:
-        from qniverse.circuit import QniverseCircuit
-        from qniverse.registers import QuantumRegister, ClassicalRegister
-        import qniverse.gates as qg
-    except ImportError:
+    if not _HAVE_QNIVERSE:
         # Fallback representation if running outside the Qniverse execution container
         class MockQniverseCircuit:
             def __init__(self, ops, num_qubits):
